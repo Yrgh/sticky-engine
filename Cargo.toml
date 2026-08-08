@@ -1,0 +1,12 @@
+[package]
+name = "component-engine"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+cpal = "0.18.1"
+gltf = "1.4.1"
+rapier3d = "0.34.0"
+tokio = "1.53.1"
+vulkano = "0.35.2"
+winit = "0.30.13"
