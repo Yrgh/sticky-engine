@@ -1,0 +1,16 @@
+- Transforms
+  - 
+- Window management
+  - Input + Level ownership
+  - "Hidden windows" that render to a texture and don't receive input.
+  - Different types of windows
+- Asset/resource system for managing meshes/textures
+- Basic renderer
+  - Vulkano
+  - Render queue
+  - Render using async tasks
+  - Meshes
+- Physics
+  - rapier3d, separate sims per-level
+- Audio via cpal
+- Improved renderer

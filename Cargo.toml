@@ -3,10 +3,20 @@ name = "component-engine"
 version = "0.1.0"
 edition = "2024"
 
+[workspace]
+members = ["macros"]
+
 [dependencies]
 cpal = "0.18.1"
 gltf = "1.4.1"
 rapier3d = "0.34.0"
-tokio = "1.53.1"
+tokio = {version="1.53.1", features=["full"]}
 vulkano = "0.35.2"
 winit = "0.30.13"
+macros = {path="macros"}
+anyhow = "1.0.104"
+linkme = "0.3.37"
+elsa = "1.11.2"
+boxcar = "0.2.14"
+chrono = "0.4.45"
+glamx = "0.3.0"
