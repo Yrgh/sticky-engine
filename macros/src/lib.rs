@@ -637,10 +637,10 @@ impl Parse for ComponentDef {
 ///         // Note: self_id can be passed around but will return None on all accesses until after
 ///         // init completes
 ///         fn init(
-///             world: &world::World,
+///             world: &World,
 ///             parent: ComponentParent,
 ///             self_id: ComponentId<Self>
-///         ) -> CComponentInit {unsafe
+///         ) -> CComponentInit {
 ///             ...
 ///         }
 ///     }
@@ -808,6 +808,9 @@ pub fn comp_def(input: TokenStream1) -> TokenStream1 {
     {
         let formatted = syn::Ident::new(&format!("c_{name}"), Span2::call_site());
 
+        let id_ty_span = id_ty.span();
+
+        let id_ty: Type = parse_quote! { <#id_ty as #comp_mod::ISlotTr>::Id };
         let stored = match modifier {
             ChildComponentModifier::Static | ChildComponentModifier::DynOne => id_ty.clone(),
             ChildComponentModifier::DynOpt => parse_quote! { Option<#id_ty> },
@@ -835,7 +838,7 @@ pub fn comp_def(input: TokenStream1) -> TokenStream1 {
                 });
 
                 static_verifications.push(quote_spanned! {
-                    id_ty.span() =>
+                    id_ty_span =>
                     const _: () = _assert_valid_static::<#id_ty>();
                 });
 

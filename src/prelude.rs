@@ -2,6 +2,7 @@
 
 pub use super::engine::{
     world::World,
+    trans::*,
     component::{ComponentId, ComponentParent, DynComponentId, IComponent, ISlotId},
     level::LevelIndex,
     main_loop::{run_main_loop, queue_quit},

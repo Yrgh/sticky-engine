@@ -32,7 +32,7 @@ mod private {
 }
 
 #[diagnostic::on_unimplemented(
-    message = "static child Components must have a single type (use ComponentId<...>)",
+    message = "static child Components must be a concrete type",
     label = "This field has an invalid type",
     note = "Use dyn if you wish to have a dynamic type"
 )]

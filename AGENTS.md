@@ -22,4 +22,4 @@ Unless a built-in Component/Slot touches a macro or is used internally by the en
 
 ## Rules
 
-- **Use crates**: Don't write complex code if a crate can do it better, but don't add depenedencies without permission.
+- **Use crates**: Don't write complex code if a crate can do it better, but don't add dependencies without permission.
