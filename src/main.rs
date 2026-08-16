@@ -1,10 +1,10 @@
-use component_engine::prelude::*;
+use sticky_engine::prelude::*;
 
 comp_def! {
-    (in component_engine)
+    (in sticky_engine)
     struct CRel {
         components {
-            
+
         }
         variables {
             trans: Trans3ProviderRelative,
@@ -23,7 +23,7 @@ comp_def! {
     }
 }
 
-#[slot_impl(in component_engine)]
+#[slot_impl(in sticky_engine)]
 impl STrans3 for CRel {
     fn get_provider(&self) -> &dyn ITrans3Provider {
         &self.trans
@@ -35,7 +35,7 @@ impl STrans3 for CRel {
 }
 
 comp_def! {
-    (in component_engine)
+    (in sticky_engine)
     struct CTop {
         components {
             static rel: CRel,
@@ -57,7 +57,7 @@ comp_def! {
     }
 }
 
-#[slot_impl(in component_engine)]
+#[slot_impl(in sticky_engine)]
 impl STrans3 for CTop {
     fn get_provider(&self) -> &dyn ITrans3Provider {
         &self.trans
@@ -70,11 +70,14 @@ impl STrans3 for CTop {
 
 fn main() {
     unsafe {
-        run_main_loop(|world| {
-            println!("main loop started");
-            let main_level = world.main_level();
-            main_level.spawn_top_level::<CTop>(world);
-        })
+        run_main_loop(
+            |world| {
+                log!(dbg: "main loop started");
+                let main_level = world.main_level().expect("main level");
+                main_level.spawn_top_level::<CTop>(world);
+            },
+            false,
+        )
     }
     .expect("main loop failed");
 }

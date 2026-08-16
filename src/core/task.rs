@@ -13,14 +13,14 @@ use std::any::Any;
 
 use tokio::sync::oneshot;
 
-use crate::engine::{
+use crate::core::{
     world::World,
     main_loop::{MAIN_QUEUE, MainJob, RT_HANDLE},
 };
 
 /// Runs a closure on the main thread with access to the [`World`].
 ///
-/// Components, and therefore [`Level`](crate::engine::level::Level)s and the
+/// Components, and therefore [`Level`](crate::core::level::Level)s and the
 /// `World`, are [`!Send`](Send) + [`!Sync`](Sync), due to being stored in
 /// [`RefCell`](std::cell::RefCell)s. In a task, you may want to update
 /// something in a Component. You could use a channel, or you could use this.

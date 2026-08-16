@@ -25,9 +25,9 @@ fn error(tokens: impl quote::ToTokens, message: impl std::fmt::Display) -> Token
 /// with a diagnostic message. The macro also creates an ID type, called
 /// `SlotNameId` (where SlotName is the name of the trait).
 ///
-/// If you get messages saying the `component-engine` crate cannot be found, you
+/// If you get messages saying the `sticky-engine` crate cannot be found, you
 /// can add `(in path)` to the macro arguments, where `path` is the path to the
-/// `component-engine` crate.
+/// `sticky-engine` crate.
 pub fn slot_def(attr: TokenStream1, input: TokenStream1) -> TokenStream1 {
     let input_orig: TokenStream2 = input.clone().into();
     let input = parse_macro_input!(input as ItemTrait);
@@ -62,8 +62,8 @@ pub fn slot_def(attr: TokenStream1, input: TokenStream1) -> TokenStream1 {
         if let Some((_, path)) = parse_macro_input!(attr as ParentCrateSpecifier).0 {
             path.into_token_stream()
         } else {
-            let Ok(parent_crate_name) = crate_name("component-engine") else {
-                return error(input_orig, "could not find component-engine crate");
+            let Ok(parent_crate_name) = crate_name("sticky-engine") else {
+                return error(input_orig, "could not find sticky-engine crate");
             };
 
             match parent_crate_name {
@@ -78,7 +78,7 @@ pub fn slot_def(attr: TokenStream1, input: TokenStream1) -> TokenStream1 {
 
     input_out
         .supertraits
-        .push(parse_quote! { #engine_crate::engine::component::IComponent });
+        .push(parse_quote! { #engine_crate::core::component::IComponent });
 
     let forgot_name = syn::Ident::new(
         &format!("YouForgotSlotImpl__{slot_name}"),
@@ -130,15 +130,15 @@ pub fn slot_def(attr: TokenStream1, input: TokenStream1) -> TokenStream1 {
 
         mod #module_name {
             use super::*;
-            use #engine_crate::engine::component::*;
+            use #engine_crate::core::component::*;
 
             #[doc = #id_doc]
             #visibility1 struct #slot_id_name {
                 pidx: u32,
                 gidx: u32,
-                lidx: #engine_crate::engine::level::LevelIndex,
+                lidx: #engine_crate::core::level::LevelIndex,
                 tyid: ::std::any::TypeId,
-                conv: &'static #engine_crate::engine::relations::Convert<dyn super::#slot_name>,
+                conv: &'static #engine_crate::core::relations::Convert<dyn super::#slot_name>,
             }
 
             impl<C: ToDyn<dyn super::#slot_name> + IComponent>
@@ -153,7 +153,7 @@ pub fn slot_def(attr: TokenStream1, input: TokenStream1) -> TokenStream1 {
                         gidx,
                         lidx,
                         tyid,
-                        conv: #engine_crate::engine::relations::RELATIONS
+                        conv: #engine_crate::core::relations::RELATIONS
                             .get_convert::<#slot_id_name>(tyid)
                             .expect("bad reflection data"),
                     }
@@ -178,7 +178,7 @@ pub fn slot_def(attr: TokenStream1, input: TokenStream1) -> TokenStream1 {
                 unsafe fn from_parts(
                     pidx: u32,
                     gidx: u32,
-                    lidx: #engine_crate::engine::level::LevelIndex,
+                    lidx: #engine_crate::core::level::LevelIndex,
                     tyid: ::std::any::TypeId,
                 ) -> Self where Self: Sized {
                     Self {
@@ -186,13 +186,13 @@ pub fn slot_def(attr: TokenStream1, input: TokenStream1) -> TokenStream1 {
                         gidx,
                         lidx,
                         tyid,
-                        conv: #engine_crate::engine::relations::RELATIONS
+                        conv: #engine_crate::core::relations::RELATIONS
                             .get_convert::<#slot_id_name>(tyid)
                             .expect("bad reflection data"),
                     }
                 }
 
-                fn level_id(&self) -> #engine_crate::engine::level::LevelIndex {
+                fn level_id(&self) -> #engine_crate::core::level::LevelIndex {
                     self.lidx
                 }
 
@@ -200,7 +200,7 @@ pub fn slot_def(attr: TokenStream1, input: TokenStream1) -> TokenStream1 {
                     (self.pidx, self.gidx, self.tyid)
                 }
 
-                fn get<'a>(&'a self, world: &'a #engine_crate::engine::world::World)
+                fn get<'a>(&'a self, world: &'a #engine_crate::core::world::World)
                     -> Option<::std::cell::Ref<'a, Self::TraitObject>>
                 {
                     Some((self.conv.comp_to_t_ref)(
@@ -210,7 +210,7 @@ pub fn slot_def(attr: TokenStream1, input: TokenStream1) -> TokenStream1 {
                     ))
                 }
 
-                fn get_mut<'a>(&'a self, world: &'a #engine_crate::engine::world::World)
+                fn get_mut<'a>(&'a self, world: &'a #engine_crate::core::world::World)
                     -> Option<::std::cell::RefMut<'a, Self::TraitObject>>
                 {
                     Some((self.conv.comp_to_t_mut)(
@@ -239,6 +239,8 @@ pub fn slot_def(attr: TokenStream1, input: TokenStream1) -> TokenStream1 {
                 }
             }
 
+            impl ::std::cmp::Eq for #slot_id_name {}
+
             impl ::std::hash::Hash for #slot_id_name {
                 fn hash<H: ::std::hash::Hasher>(&self, state: &mut H) {
                     state.write_u32(self.pidx);
@@ -259,9 +261,9 @@ pub fn slot_def(attr: TokenStream1, input: TokenStream1) -> TokenStream1 {
 /// This adds additional information to the impl, including implementing
 /// `AsDyn<dyn SlotName>` on your Component and generating reflection info.
 ///
-/// If you get errors saying the `component-engine` crate cannot be found, you
+/// If you get errors saying the `sticky-engine` crate cannot be found, you
 /// can add `(in path)` to the macro arguments, where `path` is the path to the
-/// `component-engine` crate.
+/// `sticky-engine` crate.
 pub fn slot_impl(attr: TokenStream1, input: TokenStream1) -> TokenStream1 {
     let input_orig: TokenStream2 = input.clone().into();
     let input = parse_macro_input!(input as ItemImpl);
@@ -297,8 +299,8 @@ pub fn slot_impl(attr: TokenStream1, input: TokenStream1) -> TokenStream1 {
         if let Some((_, path)) = parse_macro_input!(attr as ParentCrateSpecifier).0 {
             path.into_token_stream()
         } else {
-            let Ok(parent_crate_name) = crate_name("component-engine") else {
-                return error(input_orig, "could not find component-engine crate");
+            let Ok(parent_crate_name) = crate_name("sticky-engine") else {
+                return error(input_orig, "could not find sticky-engine crate");
             };
 
             match parent_crate_name {
@@ -326,9 +328,9 @@ pub fn slot_impl(attr: TokenStream1, input: TokenStream1) -> TokenStream1 {
 
         mod #mod_name {
             use super::*;
-            use #engine_crate::engine::relations::*;
+            use #engine_crate::core::relations::*;
 
-            impl #engine_crate::engine::component::ToDyn<dyn #slot_tr> for #comp_ty {
+            impl #engine_crate::core::component::ToDyn<dyn #slot_tr> for #comp_ty {
                 fn to_dyn(&self) -> &(dyn #slot_tr + 'static) {
                     self
                 }
@@ -647,9 +649,9 @@ impl Parse for ComponentDef {
 /// }
 /// ```
 ///
-/// If you get messages saying the `component-engine` crate cannot be found, you
+/// If you get messages saying the `sticky-engine` crate cannot be found, you
 /// can add `(in path)` to the beginning of the macro, where `path` is the path
-/// to the `component-engine` crate.
+/// to the `sticky-engine` crate.
 ///
 /// # Behaviors
 ///
@@ -744,8 +746,8 @@ pub fn comp_def(input: TokenStream1) -> TokenStream1 {
     let engine_crate = if let Some(es) = engine_specifier {
         es.path.to_token_stream()
     } else {
-        let Ok(parent_crate_name) = crate_name("component-engine") else {
-            return error(input_orig, "could not find component-engine crate");
+        let Ok(parent_crate_name) = crate_name("sticky-engine") else {
+            return error(input_orig, "could not find sticky-engine crate");
         };
 
         match parent_crate_name {
@@ -754,7 +756,7 @@ pub fn comp_def(input: TokenStream1) -> TokenStream1 {
         }
     };
 
-    let comp_mod = quote! { #engine_crate::engine::component };
+    let comp_mod = quote! { #engine_crate::core::component };
 
     let mod_name = syn::Ident::new(&format!("__{name}_{}", random_name()), Span2::call_site());
 
@@ -864,7 +866,7 @@ pub fn comp_def(input: TokenStream1) -> TokenStream1 {
 
                     pub fn #spawn_in_name<C>(
                         &mut self,
-                        world: &#engine_crate::engine::world::World
+                        world: &#engine_crate::core::world::World
                     )
                     where
                         C: #comp_mod::ToDyn<<#stored as #comp_mod::ISlotId>::TraitObject>
@@ -917,7 +919,7 @@ pub fn comp_def(input: TokenStream1) -> TokenStream1 {
 
                     pub fn #spawn_in_name<C>(
                         &mut self,
-                        world: &#engine_crate::engine::world::World
+                        world: &#engine_crate::core::world::World
                     )
                     where
                         C: #comp_mod::ToDyn<<#id_ty as #comp_mod::ISlotId>::TraitObject>
@@ -947,7 +949,7 @@ pub fn comp_def(input: TokenStream1) -> TokenStream1 {
 
                     pub fn #clear_name(
                         &mut self,
-                        world: &#engine_crate::engine::world::World
+                        world: &#engine_crate::core::world::World
                     ) -> bool {
                         use #comp_mod::ISlotId;
 
@@ -1018,7 +1020,7 @@ pub fn comp_def(input: TokenStream1) -> TokenStream1 {
                     pub fn #name_remove_at(
                         &mut self,
                         index: usize,
-                        world: &#engine_crate::engine::world::World
+                        world: &#engine_crate::core::world::World
                     ) -> bool {
                         use #comp_mod::ISlotId;
 
@@ -1044,7 +1046,7 @@ pub fn comp_def(input: TokenStream1) -> TokenStream1 {
                     pub fn #name_remove_id(
                         &mut self,
                         id: &#id_ty,
-                        world: &#engine_crate::engine::world::World
+                        world: &#engine_crate::core::world::World
                     ) -> bool {
                         if let Some(index) = self.#name_find_id(id) {
                             self.#name_remove_at(index, world)
@@ -1056,7 +1058,7 @@ pub fn comp_def(input: TokenStream1) -> TokenStream1 {
                     pub fn #name_spawn_at<C>(
                         &mut self,
                         index: usize,
-                        world: &#engine_crate::engine::world::World
+                        world: &#engine_crate::core::world::World
                     )
                     where
                         C: #comp_mod::ToDyn<<#id_ty as #comp_mod::ISlotId>::TraitObject>
@@ -1159,7 +1161,7 @@ pub fn comp_def(input: TokenStream1) -> TokenStream1 {
                 }
 
                 fn spawn(
-                    world: &#engine_crate::engine::world::World,
+                    world: &#engine_crate::core::world::World,
                     parent: #comp_mod::ComponentParent,
                 ) -> #comp_mod::ComponentId<Self>
                 where
@@ -1185,7 +1187,7 @@ pub fn comp_def(input: TokenStream1) -> TokenStream1 {
                     self_id
                 }
 
-                fn destroy_hook(&mut self, world: &#engine_crate::engine::world::World) {
+                fn destroy_hook(&mut self, world: &#engine_crate::core::world::World) {
                     #user_destroy
 
                     use #comp_mod::ISlotId;
@@ -1207,7 +1209,7 @@ pub fn comp_def(input: TokenStream1) -> TokenStream1 {
 
                 fn pre_phys_hook(
                     &mut self,
-                    world: &#engine_crate::engine::world::World,
+                    world: &#engine_crate::core::world::World,
                     delta: f32
                 ) {
                     use #comp_mod::ISlotId;
@@ -1222,7 +1224,7 @@ pub fn comp_def(input: TokenStream1) -> TokenStream1 {
 
                 fn post_phys_hook(
                     &mut self,
-                    world: &#engine_crate::engine::world::World,
+                    world: &#engine_crate::core::world::World,
                     delta: f32
                 ) {
                     use #comp_mod::ISlotId;
@@ -1237,7 +1239,7 @@ pub fn comp_def(input: TokenStream1) -> TokenStream1 {
 
                 fn idle_hook(
                     &mut self,
-                    world: &#engine_crate::engine::world::World,
+                    world: &#engine_crate::core::world::World,
                     delta: f32
                 ) {
                     use #comp_mod::ISlotId;

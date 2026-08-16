@@ -1,17 +1,17 @@
 //! Inherit properties of Components, mainly [`IComponent`]
 
-use crate::engine::{world::World, level::LevelIndex};
+use crate::core::{world::World, level::LevelIndex};
 
 use super::*;
 
 #[derive(Clone)]
 /// The parent of a Component, either another Component or a
-/// [`Level`](crate::engine::level::Level).
+/// [`Level`](crate::core::level::Level).
 pub enum ComponentParent {
     /// The Component has another Component as a parent
     Component(DynComponentId),
     /// The Component is top-level within the given
-    /// [`Level`](crate::engine::level::Level).
+    /// [`Level`](crate::core::level::Level).
     Level(LevelIndex),
 }
 
@@ -76,7 +76,7 @@ impl From<LevelIndex> for ComponentParent {
 /// 
 /// `parent_id` must return the ID passed through `spawn`.
 pub unsafe trait IComponent: Any {
-    /// Must return the ID of the parent Component or [`Level`](crate::engine::level::Level)
+    /// Must return the ID of the parent Component or [`Level`](crate::core::level::Level)
     fn parent_id(&self) -> ComponentParent;
 
     /// Must return all child Components owned by this Component.

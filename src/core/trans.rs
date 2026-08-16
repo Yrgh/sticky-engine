@@ -2,11 +2,12 @@
 
 use std::{cell::Cell, collections::VecDeque};
 
-use macros::slot_def;
-
-use crate::engine::{
-    component::{ComponentParent, DynComponentId, ISlotId},
-    world::World,
+use crate::{
+    core::{
+        component::{ComponentParent, DynComponentId, ISlotId},
+        world::World,
+    },
+    slot_def
 };
 
 /// Transform of a 3D object
@@ -27,7 +28,7 @@ pub trait STrans3 {
     // Provided
 
     /// Returns the transform relative to the owning
-    /// [`Level`](crate::engine::level::Level).
+    /// [`Level`](crate::core::level::Level).
     fn get_global_trans(&self, world: &World) -> Trans3 {
         self.get_provider().get_global_trans(world)
     }
@@ -36,7 +37,7 @@ pub trait STrans3 {
         self.get_provider().get_local_trans(world)
     }
     /// Sets the transform relative to the owning
-    /// [`Level`](crate::engine::level::Level).
+    /// [`Level`](crate::core::level::Level).
     fn set_global_trans(&mut self, trans: Trans3, world: &World) {
         unsafe { self.get_provider_mut().set_global_trans(trans, world) };
 
@@ -70,12 +71,12 @@ pub trait STrans3 {
 /// actual implementation, for example [`Trans3ProviderRelative`].
 pub trait ITrans3Provider {
     /// Returns the transform relative to the owning
-    /// [`Level`](crate::engine::level::Level).
+    /// [`Level`](crate::core::level::Level).
     fn get_global_trans(&self, world: &World) -> Trans3;
     /// Returns the transform relative to the parent.
     fn get_local_trans(&self, world: &World) -> Trans3;
     /// Sets the transform relative to the owning
-    /// [`Level`](crate::engine::level::Level).
+    /// [`Level`](crate::core::level::Level).
     ///
     /// # Safety
     ///

@@ -12,12 +12,9 @@ use std::{
 use elsa::FrozenMap;
 
 use crate::{
-    engine::{
-        component::{ComponentId, DynComponentId, IComponent, ISlotId},
-        relations::{BuildTypeIdHasher, RELATIONS},
-        world::World,
-    },
-    log,
+    core::{
+        component::{ComponentId, DynComponentId, IComponent, ISlotId}, relations::{BuildTypeIdHasher, RELATIONS}, renderer::RenderingQueue, world::World,
+    }, log,
 };
 
 trait IColumn: Any {
@@ -125,6 +122,8 @@ pub struct Level {
     self_idx: Cell<Option<LevelIndex>>,
     component_columns: FrozenMap<TypeId, Box<dyn IColumn>, BuildTypeIdHasher>,
     top_level: RefCell<Vec<DynComponentId>>,
+
+    rendering_queue: RefCell<RenderingQueue>,
 }
 
 impl Level {
@@ -133,10 +132,12 @@ impl Level {
             self_idx: Cell::new(Some(self_idx)),
             component_columns: FrozenMap::default(),
             top_level: RefCell::new(Vec::new()),
+            rendering_queue: RefCell::new(RenderingQueue::new()),
         }
     }
 
-    fn id(&self) -> LevelIndex {
+    /// Returns the [`LevelIndex`] that accesses this `Level`.
+    pub fn id(&self) -> LevelIndex {
         self.self_idx.get().expect("level not active")
     }
 
@@ -494,27 +495,54 @@ impl Level {
                 })
             })
     }
+
+    pub(crate) fn update_rendering_queue(&self) -> Ref<'_, RenderingQueue> {
+        // TODO: Actually update the rendering queue
+
+        self.rendering_queue.borrow()
+    }
 }
 
 /// Non-owning index within the [`World`] of a [`Level`].
-#[derive(Clone, Copy, Hash, PartialEq, Debug)]
-pub struct LevelIndex(pub(crate) u32);
+#[derive(Clone, Copy, Hash, PartialEq, Eq, Debug)]
+pub struct LevelIndex(pub(crate) u32, pub(crate) u32);
 
 /// Singly-owning index within the [`World`] of a [`Level`].
-#[derive(Hash, PartialEq)]
-pub struct LevelIndexOwned(pub(crate) u32);
+#[derive(Hash)]
+pub struct LevelIndexOwned(pub(crate) u32, pub(crate) u32);
 
 impl LevelIndexOwned {
     /// Returns a non-owning copy of this index.
     pub fn handle(&self) -> LevelIndex {
-        LevelIndex(self.0)
+        LevelIndex(self.0, self.1)
+    }
+
+    /// Leaks the index. The [`Level`] will live until the [`World`] is dropped.
+    /// 
+    /// Avoid silent-dropping a `LevelIndexOwned`, as it logs an error unless
+    /// you call this manually.
+    pub fn leak(mut self) {
+        self.0 = u32::MAX;
+        self.1 = u32::MAX
     }
 }
 
 impl Drop for LevelIndexOwned {
     fn drop(&mut self) {
-        if self.0 != u32::MAX {
+        if self.0 != u32::MAX && self.1 != u32::MAX {
             log!(err: "Leaked level {:?}", self.handle())
         }
+    }
+}
+
+impl PartialEq<LevelIndex> for LevelIndexOwned {
+    fn eq(&self, other: &LevelIndex) -> bool {
+        &self.handle() == other
+    }
+}
+
+impl PartialEq<LevelIndexOwned> for LevelIndex {
+    fn eq(&self, other: &LevelIndexOwned) -> bool {
+        self == &other.handle()
     }
 }

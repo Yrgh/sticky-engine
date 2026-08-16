@@ -6,7 +6,7 @@ use std::{
     marker::PhantomData,
 };
 
-use crate::engine::{
+use crate::core::{
     level::{Level, LevelIndex},
     relations::RELATIONS,
     world::World,
@@ -29,7 +29,7 @@ use super::*;
 /// ```
 ///
 /// [`PartialEq`] must compare `pidx`, `gidx`, and `lidx`. Comparing type IDs is not necessary.
-pub unsafe trait ISlotId: Any + std::hash::Hash + PartialEq + Clone {
+pub unsafe trait ISlotId: Any + std::hash::Hash + PartialEq + Eq + Clone {
     /// The type or trait object this ID resolves to.
     type TraitObject: ISlotTr<Id = Self> + ?Sized;
 
@@ -150,6 +150,8 @@ impl<C: IComponent> PartialEq for ComponentId<C> {
         self.pidx == other.pidx && self.gidx == other.gidx && self.lidx == other.lidx
     }
 }
+
+impl<C: IComponent> Eq for ComponentId<C> {}
 
 unsafe impl<C: IComponent> ISlotId for ComponentId<C> {
     type TraitObject = C;
@@ -272,3 +274,5 @@ impl<D: ISlotId> PartialEq<D> for DynComponentId {
         self.pidx == pidx && self.gidx == gidx && self.lidx == lidx
     }
 }
+
+impl Eq for DynComponentId {}

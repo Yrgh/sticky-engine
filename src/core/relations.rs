@@ -6,7 +6,7 @@ use std::{
 
 pub use linkme::distributed_slice;
 
-use crate::engine::{component::{IComponent, ISlotId, ISlotTr}};
+use crate::core::{component::{IComponent, ISlotId, ISlotTr}};
 
 #[derive(Default)]
 pub(crate) struct TypeIdHasher(u64);

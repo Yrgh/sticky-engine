@@ -1,14 +1,25 @@
+- Renderer skeleton
+  - Levels render things like secondary cameras and shadow maps first.
+  - Windows render primary cameras during their redraw event
+  - Emit redraw events each frame
 - Window management
   - Input + Level ownership
   - "Hidden windows" that render to a texture and don't receive input.
   - Different types of windows
 - Asset/resource system for managing meshes/textures
 - Basic renderer
-  - Vulkano
-  - Render queue
-  - Render using async tasks
+  - Forward pass
+  - Cameras
   - Meshes
+    - gltf loading.
+  - Shaders
+  - Textures
 - Physics
   - rapier3d, separate sims per-level
 - Audio via cpal
 - Improved renderer
+  - Framebuffer textures
+  - Shadows
+  - Postprocessing
+  - Built-in effects like SSR and SSAO
+  - Rendering hooks for user-defined effects.

@@ -1,7 +1,12 @@
 [package]
-name = "component-engine"
+name = "sticky-engine"
 version = "0.1.0"
 edition = "2024"
+license = "MIT OR Apache-2.0"
+description = "Game engine based on composition and trees"
+repository = "https://github.com/Yrgh/sticky-engine"
+keywords = ["engine", "game", "gamedev", "component", "composition"]
+categories = ["game-development", "game-engines", "rendering", "rendering::engine"]
 
 [workspace]
 members = ["macros"]
@@ -13,10 +18,11 @@ rapier3d = "0.34.0"
 tokio = {version="1.53.1", features=["full"]}
 vulkano = "0.35.2"
 winit = "0.30.13"
-macros = {path="macros"}
+sticky-engine-macros = {path="macros"}
 anyhow = "1.0.104"
 linkme = "0.3.37"
 elsa = "1.11.2"
 boxcar = "0.2.14"
 chrono = "0.4.45"
 glamx = "0.3.0"
+smallvec = "1.15.2"

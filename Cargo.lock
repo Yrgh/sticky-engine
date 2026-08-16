@@ -313,25 +313,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "component-engine"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "boxcar",
- "chrono",
- "cpal",
- "elsa",
- "glamx",
- "gltf",
- "linkme",
- "macros",
- "rapier3d",
- "tokio",
- "vulkano",
- "winit",
-]
-
-[[package]]
 name = "concurrent-queue"
 version = "2.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1045,17 +1026,6 @@ name = "mach2"
 version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dae608c151f68243f2b000364e1f7b186d9c29845f7d2d85bd31b9ad77ad552b"
-
-[[package]]
-name = "macros"
-version = "0.1.0"
-dependencies = [
- "proc-macro-crate",
- "proc-macro2",
- "quote",
- "syn 3.0.3",
- "uuid",
-]
 
 [[package]]
 name = "matrixmultiply"
@@ -2169,6 +2139,37 @@ name = "static_assertions"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a2eb9349b6444b326872e140eb1cf5e7c522154d69e7a0ffb0fb81c06b37543f"
+
+[[package]]
+name = "sticky-engine"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "boxcar",
+ "chrono",
+ "cpal",
+ "elsa",
+ "glamx",
+ "gltf",
+ "linkme",
+ "rapier3d",
+ "smallvec",
+ "sticky-engine-macros",
+ "tokio",
+ "vulkano",
+ "winit",
+]
+
+[[package]]
+name = "sticky-engine-macros"
+version = "0.1.0"
+dependencies = [
+ "proc-macro-crate",
+ "proc-macro2",
+ "quote",
+ "syn 3.0.3",
+ "uuid",
+]
 
 [[package]]
 name = "strict-num"
