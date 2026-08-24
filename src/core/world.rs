@@ -12,14 +12,13 @@ use std::{
 
 use anyhow::Result as AResult;
 
-use winit::{
-    dpi::PhysicalSize, event::WindowEvent, event_loop::ActiveEventLoop, window::WindowAttributes,
-};
+use winit::{event::WindowEvent, event_loop::ActiveEventLoop, window::WindowAttributes};
 
+use crate::core::window::IWindow;
 use crate::core::{
     level::{Level, LevelIndex, LevelIndexOwned},
     vk::VkContext,
-    window::{IWindow, RootWindow, ViewportWindow, WindowId, WindowIdOwned},
+    window::{IWindowBoth, RootWindow, WindowId, WindowIdOwned},
 };
 
 enum WorldAction {
@@ -33,7 +32,7 @@ enum LevelStorage {
 }
 
 enum WindowStorage {
-    Occupied(LevelIndexOwned, Box<dyn IWindow>),
+    Occupied(LevelIndexOwned, Box<dyn IWindowBoth>),
     Vacant(Option<usize>),
 }
 
@@ -45,6 +44,7 @@ pub struct World {
     action_queue: RefCell<VecDeque<WorldAction>>,
 
     stable_rate: Cell<Duration>,
+    min_idle_delay: Cell<Duration>,
 
     windows: Box<boxcar::Vec<RefCell<(u32, WindowStorage)>>>,
     window_free_head: Cell<Option<usize>>,
@@ -69,6 +69,7 @@ impl World {
             action_queue: RefCell::new(VecDeque::new()),
 
             stable_rate: Cell::new(Duration::from_millis(15)),
+            min_idle_delay: Cell::new(Duration::from_millis(5)),
 
             windows: Box::new(boxcar::Vec::new()),
 
@@ -90,6 +91,7 @@ impl World {
             action_queue: RefCell::new(VecDeque::new()),
 
             stable_rate: Cell::new(Duration::from_millis(15)),
+            min_idle_delay: Cell::new(Duration::from_millis(15)),
 
             windows: Box::new(boxcar::Vec::new()),
 
@@ -137,6 +139,16 @@ impl World {
     /// Sets the rate at which physics are run.
     pub fn set_stable_tick_rate(&self, rate: Duration) {
         self.stable_rate.set(rate);
+    }
+
+    /// Returns the minimum delay between idle hooks.
+    pub fn get_idle_min_delay(&self) -> Duration {
+        self.min_idle_delay.get()
+    }
+
+    /// Sets the minimum delay between idle hooks.
+    pub fn set_idle_min_delay(&self, rate: Duration) {
+        self.min_idle_delay.set(rate);
     }
 
     pub(crate) fn flush_actions(&mut self) {
@@ -315,19 +327,6 @@ impl World {
 }
 
 impl World {
-    /// Create a new [`IWindow`] from a custom builder.
-    ///
-    /// The builder receives the [`WindowId`] assigned to the window and the
-    /// [`LevelIndex`] of the [`Level`] the window owns. Use this to register
-    /// custom window types, such as virtual windows.
-    pub fn create_window(
-        &self,
-        build: impl FnOnce(WindowId, LevelIndex) -> Box<dyn IWindow>,
-    ) -> WindowIdOwned {
-        let level = self.create_level();
-        self.insert_window(level, build)
-    }
-
     /// Create a new [`RootWindow`] from the given attributes.
     ///
     /// This must be called from within the main loop, where an event loop is
@@ -340,7 +339,7 @@ impl World {
             .create_window(attrs)
             .map_err(|e| anyhow::anyhow!("failed to create window: {e}"))?;
 
-        Ok(self.create_window(move |id, level| {
+        Ok(self.insert_window(self.create_level(), move |id, level| {
             Box::new(RootWindow::new(
                 id,
                 level,
@@ -350,15 +349,10 @@ impl World {
         }))
     }
 
-    /// Create a new [`ViewportWindow`] that renders to a texture.
-    pub fn create_viewport_window(&self, size: PhysicalSize<u32>) -> WindowIdOwned {
-        self.create_window(|id, level| Box::new(ViewportWindow::new(id, level, size)))
-    }
-
     fn insert_window(
         &self,
         level: LevelIndexOwned,
-        build: impl FnOnce(WindowId, LevelIndex) -> Box<dyn IWindow>,
+        build: impl FnOnce(WindowId, LevelIndex) -> Box<dyn IWindowBoth>,
     ) -> WindowIdOwned {
         let handle = level.handle();
 
@@ -395,20 +389,39 @@ impl World {
 
     /// Returns an [`IWindow`] by its ID.
     pub fn get_window(&self, id: WindowId) -> Option<Ref<'_, dyn IWindow>> {
-        Ref::filter_map(self.windows.get(id.0 as usize)?.borrow(), |s| {
-            if let WindowStorage::Occupied(_, window) = &s.1
-                && id.1 == s.0
-            {
-                Some(window.as_ref())
-            } else {
-                None
-            }
-        })
+        Ref::filter_map(
+            self.windows.get(id.0 as usize)?.borrow(),
+            |s| -> Option<&dyn IWindow> {
+                if let WindowStorage::Occupied(_, window) = &s.1
+                    && id.1 == s.0
+                {
+                    Some(window.as_ref())
+                } else {
+                    None
+                }
+            },
+        )
         .ok()
     }
 
     /// Returns an [`IWindow`] by its ID, mutably.
     pub fn get_window_mut(&self, id: WindowId) -> Option<RefMut<'_, dyn IWindow>> {
+        RefMut::filter_map(
+            self.windows.get(id.0 as usize)?.borrow_mut(),
+            |s| -> Option<&mut dyn IWindow> {
+                if let WindowStorage::Occupied(_, window) = &mut s.1
+                    && id.1 == s.0
+                {
+                    Some(window.as_mut())
+                } else {
+                    None
+                }
+            },
+        )
+        .ok()
+    }
+
+    pub(crate) fn get_window_mut_int(&self, id: WindowId) -> Option<RefMut<'_, dyn IWindowBoth>> {
         RefMut::filter_map(self.windows.get(id.0 as usize)?.borrow_mut(), |s| {
             if let WindowStorage::Occupied(_, window) = &mut s.1
                 && id.1 == s.0
@@ -426,7 +439,7 @@ impl World {
         self.windows.iter().find_map(|(pidx, storage)| {
             let s = storage.borrow();
             if let WindowStorage::Occupied(_, window) = &s.1
-                && window.os_id() == Some(os_id)
+                && window.as_os().map(|w| w.id()) == Some(os_id)
             {
                 Some(WindowId(pidx as u32, s.0))
             } else {
@@ -435,24 +448,17 @@ impl World {
         })
     }
 
-    /// Routes an OS event to the window with the given ID.
-    pub fn handle_window_event(&self, id: WindowId, event: &WindowEvent) {
-        let Some(mut window) = self.get_window_mut(id) else {
+    pub(crate) fn handle_window_event(&self, id: WindowId, event: &WindowEvent) {
+        let Some(mut window) = self.get_window_mut_int(id) else {
             return;
         };
-        if !window.receives_input() {
-            return;
-        }
-        match event {
-            WindowEvent::Resized(size) => window.on_resize(self, *size),
-            _ => window.on_input_event(self, event),
-        }
+        window.on_input_event(self, event);
     }
 
     /// Returns an immutable iterator over every [`IWindow`].
     pub fn iter_windows(&self) -> impl Iterator<Item = Ref<'_, dyn IWindow>> {
         self.windows.iter().filter_map(|(_, storage)| {
-            Ref::filter_map(storage.borrow(), |s| {
+            Ref::filter_map(storage.borrow(), |s| -> Option<&dyn IWindow> {
                 if let WindowStorage::Occupied(_, window) = &s.1 {
                     Some(window.as_ref())
                 } else {
@@ -465,6 +471,19 @@ impl World {
 
     /// Returns a mutable iterator over every [`IWindow`].
     pub fn iter_windows_mut(&self) -> impl Iterator<Item = RefMut<'_, dyn IWindow>> {
+        self.windows.iter().filter_map(|(_, storage)| {
+            RefMut::filter_map(storage.borrow_mut(), |s| -> Option<&mut dyn IWindow> {
+                if let WindowStorage::Occupied(_, window) = &mut s.1 {
+                    Some(window.as_mut())
+                } else {
+                    None
+                }
+            })
+            .ok()
+        })
+    }
+
+    pub(crate) fn iter_windows_mut_int(&self) -> impl Iterator<Item = RefMut<'_, dyn IWindowBoth>> {
         self.windows.iter().filter_map(|(_, storage)| {
             RefMut::filter_map(storage.borrow_mut(), |s| {
                 if let WindowStorage::Occupied(_, window) = &mut s.1 {

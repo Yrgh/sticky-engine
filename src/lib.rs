@@ -35,8 +35,10 @@
 //! are [`ViewportWindow`](core::window::ViewportWindow)s. See [`core::window`].
 //! 
 //! 
+
 #![warn(clippy::all)]
 #![deny(clippy::unwrap_used, clippy::expect_fun_call, clippy::todo, missing_docs)]
+#![allow(clippy::arc_with_non_send_sync)]
 
 pub use sticky_engine_macros::{comp_def, slot_def, slot_impl};
 

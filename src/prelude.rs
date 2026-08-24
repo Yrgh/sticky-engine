@@ -1,4 +1,4 @@
-//! Important imports such as macros, traits, and the founations of the engine.
+//! Important imports such as macros, traits, and the foundations of the engine.
 
 pub use super::core::{
     world::World,
@@ -7,6 +7,5 @@ pub use super::core::{
     level::LevelIndex,
     main_loop::{run_main_loop, queue_quit},
     task::{join_main, spawn},
-    window::{IWindow, RootWindow, ViewportWindow, WindowId, WindowIdOwned},
 };
 pub use super::{comp_def, slot_def, slot_impl, log};

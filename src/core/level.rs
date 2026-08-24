@@ -13,7 +13,7 @@ use elsa::FrozenMap;
 
 use crate::{
     core::{
-        component::{ComponentId, DynComponentId, IComponent, ISlotId}, relations::{BuildTypeIdHasher, RELATIONS}, renderer::RenderingQueue, world::World,
+        component::{ComponentId, DynComponentId, IComponent, ISlotId}, relations::{BuildTypeIdHasher, RELATIONS}, renderer::{PrimaryRenderingQueue, RenderingQueue}, window::WindowId, world::World,
     }, log,
 };
 
@@ -124,6 +124,8 @@ pub struct Level {
     top_level: RefCell<Vec<DynComponentId>>,
 
     rendering_queue: RefCell<RenderingQueue>,
+
+    window: Option<WindowId>,
 }
 
 impl Level {
@@ -133,7 +135,23 @@ impl Level {
             component_columns: FrozenMap::default(),
             top_level: RefCell::new(Vec::new()),
             rendering_queue: RefCell::new(RenderingQueue::new()),
+            window: None,
         }
+    }
+
+    pub(crate) fn for_window(self_idx: LevelIndex, window: WindowId) -> Self {
+        Self {
+            self_idx: Cell::new(Some(self_idx)),
+            component_columns: FrozenMap::default(),
+            top_level: RefCell::new(Vec::new()),
+            rendering_queue: RefCell::new(RenderingQueue::new()),
+            window: Some(window),
+        }
+    }
+
+    /// Returns the index of the bound window, if there is any.
+    pub fn get_window(&self) -> Option<WindowId> {
+        self.window
     }
 
     /// Returns the [`LevelIndex`] that accesses this `Level`.

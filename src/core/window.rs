@@ -21,6 +21,7 @@
 
 use std::{any::Any, cell::Cell, sync::Arc};
 
+use smallvec::SmallVec;
 use vulkano::{
     image::Image,
     swapchain::{Surface, Swapchain},
@@ -32,8 +33,19 @@ use winit::{
 };
 
 use crate::{
-    core::{level::LevelIndex, vk::VkContext, world::World}, log,
+    core::{
+        level::LevelIndex, renderer::PrimaryRenderingQueue, task::spawn, vk::VkContext,
+        world::World,
+    },
+    log,
 };
+
+mod private {
+    #[doc(hidden)]
+    pub trait Sealed {}
+}
+
+pub use private::Sealed;
 
 /// Non-owning handle to a [`Window`] within the [`World`].
 ///
@@ -73,62 +85,92 @@ impl Drop for WindowIdOwned {
     }
 }
 
+pub(crate) trait IWindowInt: Any {
+    fn id_i(&self) -> WindowId;
+
+    fn level_i(&self) -> LevelIndex;
+
+    fn as_os_i(&self) -> Option<&OsWindow> {
+        None
+    }
+
+    fn on_input_event(&mut self, _world: &World, _event: &WindowEvent);
+
+    fn on_resize(&mut self, _world: &World, _size: PhysicalSize<u32>);
+
+    fn as_any_i(&self) -> &dyn Any;
+
+    fn as_any_mut_i(&mut self) -> &mut dyn Any;
+
+    fn suspend(&mut self);
+
+    fn resume(&mut self);
+
+    fn set_prq(&mut self, prq: PrimaryRenderingQueue);
+
+    fn draw(&mut self);
+}
+
 /// Base trait for all windows.
 ///
 /// Windows come in several flavors, each owning exactly one
 /// [`Level`](crate::core::level::Level). To add a new kind of window, such as
 /// a virtual window, implement this trait and register it with
 /// [`World::create_window`].
-pub trait IWindow: Any {
+pub trait IWindow: Sealed {
     /// Returns the ID of this window.
     fn id(&self) -> WindowId;
 
     /// Returns the [`LevelIndex`] of the [`Level`] this window owns.
     fn level(&self) -> LevelIndex;
 
-    /// Returns whether this window receives OS input events.
-    ///
-    /// [`RootWindow`]s receive input; off-screen windows do not.
-    fn receives_input(&self) -> bool {
-        false
-    }
-
     /// Returns the OS window backing this window, if any.
-    fn os_id(&self) -> Option<OsWindowId> {
-        None
-    }
-
-    /// Called for each OS event targeting this window, if
-    /// [`receives_input`](Self::receives_input) is `true`.
-    fn on_input_event(&mut self, _world: &World, _event: &WindowEvent) {}
-
-    /// Called when the size of this window's render target changes.
-    fn on_resize(&mut self, _world: &World, _size: PhysicalSize<u32>) {}
+    fn as_os(&self) -> Option<&OsWindow>;
 
     /// Returns `self` as `&dyn Any`, for downcasting.
     fn as_any(&self) -> &dyn Any;
 
     /// Returns `self` as `&mut dyn Any`, for downcasting.
     fn as_any_mut(&mut self) -> &mut dyn Any;
+}
 
-    /// Called when
-    /// [`ApplicationHandler::suspended`](winit::application::ApplicationHandler::suspended)
-    /// is received.
-    fn suspend(&mut self) {}
+pub(crate) trait IWindowBoth: IWindow + IWindowInt {}
 
-    /// Called when
-    /// [`ApplicationHandler::resumed`](winit::application::ApplicationHandler::resumed)
-    /// is received.
-    fn resume(&mut self) {}
+impl<T: IWindowInt> Sealed for T {}
 
-    /// Called before the renderer begins to put things on the screen.
-    fn before_draw(&mut self) {}
+impl<T: IWindowInt> IWindowBoth for T {}
+
+impl<T: IWindowInt> IWindow for T {
+    /// Returns the ID of this window.
+    fn id(&self) -> WindowId {
+        <Self as IWindowInt>::id_i(self)
+    }
+
+    /// Returns the [`LevelIndex`] of the [`Level`] this window owns.
+    fn level(&self) -> LevelIndex {
+        <Self as IWindowInt>::level_i(self)
+    }
+
+    /// Returns the OS window backing this window, if any.
+    fn as_os(&self) -> Option<&OsWindow> {
+        <Self as IWindowInt>::as_os_i(self)
+    }
+
+    /// Returns `self` as `&dyn Any`, for downcasting.
+    fn as_any(&self) -> &dyn Any {
+        <Self as IWindowInt>::as_any_i(self)
+    }
+
+    /// Returns `self` as `&mut dyn Any`, for downcasting.
+    fn as_any_mut(&mut self) -> &mut dyn Any {
+        <Self as IWindowInt>::as_any_mut_i(self)
+    }
 }
 
 pub(crate) struct RootWindowSurface {
     pub(crate) surface: Arc<Surface>,
     pub(crate) swapchain: Arc<Swapchain>,
-    pub(crate) swapchain_images: Vec<Arc<Image>>,
+    pub(crate) swapchain_images: SmallVec<[Arc<Image>; 3]>,
 }
 
 /// A real, on-screen window backed by the OS.
@@ -142,6 +184,7 @@ pub struct RootWindow {
     swapchain_invalid: Cell<bool>,
     vk_ctx: Arc<VkContext>,
     surface: Option<RootWindowSurface>,
+    prq: Option<PrimaryRenderingQueue>,
 }
 
 impl RootWindow {
@@ -159,6 +202,7 @@ impl RootWindow {
             swapchain_invalid: Cell::new(true),
             vk_ctx,
             surface: None,
+            prq: None,
         }
     }
 
@@ -173,41 +217,42 @@ impl RootWindow {
     }
 }
 
-impl IWindow for RootWindow {
-    fn id(&self) -> WindowId {
+impl IWindowInt for RootWindow {
+    fn id_i(&self) -> WindowId {
         self.id
     }
 
-    fn level(&self) -> LevelIndex {
+    fn level_i(&self) -> LevelIndex {
         self.level
     }
 
-    fn receives_input(&self) -> bool {
-        true
+    fn as_os_i(&self) -> Option<&OsWindow> {
+        Some(&self.window)
     }
 
-    fn os_id(&self) -> Option<OsWindowId> {
-        Some(self.window.id())
-    }
+    fn on_input_event(&mut self, _world: &World, _event: &WindowEvent) {}
 
     fn on_resize(&mut self, _world: &World, size: PhysicalSize<u32>) {
         self.size.set(size);
         self.swapchain_invalid.set(true);
     }
 
-    fn as_any(&self) -> &dyn Any {
+    fn as_any_i(&self) -> &dyn Any {
         self
     }
 
-    fn as_any_mut(&mut self) -> &mut dyn Any {
+    fn as_any_mut_i(&mut self) -> &mut dyn Any {
         self
     }
 
     fn suspend(&mut self) {
         self.surface = None;
+        log!(dbg: "suspended");
     }
 
     fn resume(&mut self) {
+        log!(dbg: "resuming... (size: {:?})", self.size.get());
+        
         let surface = Surface::from_window(self.vk_ctx.instance.clone(), self.window.clone())
             .expect("failed to create surface");
 
@@ -219,79 +264,40 @@ impl IWindow for RootWindow {
         self.surface = Some(RootWindowSurface {
             surface,
             swapchain,
-            swapchain_images,
+            swapchain_images: swapchain_images.into(),
         });
+
+        log!(dbg: "resumed");
     }
 
-    fn before_draw(&mut self) {
-        if let Some(surface) = &mut self.surface && self.swapchain_invalid.take() {
+    fn draw(&mut self) {
+        let Some(surface) = &mut self.surface else {
+            log!(wrn: "no surface during draw");
+            return;
+        };
+
+        if self.swapchain_invalid.take() {
+            log!(dbg: "recreating swapchain... (size: {:?})", self.size.get());
+            
             let (swapchain, swapchain_images) = self
                 .vk_ctx
-                .create_swapchain(surface.surface.clone(), self.size.get())
+                .recreate_swapchain(surface.swapchain.clone(), self.size.get())
                 .expect("failed to create swapchain");
 
             surface.swapchain = swapchain;
-            surface.swapchain_images = swapchain_images;
+            surface.swapchain_images = swapchain_images.into();
+            log!(dbg: "swapchain created...");
         }
-    }
-}
 
-/// An off-screen window that renders to a texture.
-///
-/// Viewport windows are not backed by an OS window and never receive input.
-/// Their contents can be composited onto other windows' surfaces. The render
-/// target texture itself is created by the renderer (not yet implemented).
-pub struct ViewportWindow {
-    id: WindowId,
-    level: LevelIndex,
-    size: Cell<PhysicalSize<u32>>,
-    size_changed: Cell<bool>,
-}
-
-impl ViewportWindow {
-    /// Creates a new viewport window with the given initial size.
-    ///
-    /// The `id` is assigned by the [`World`], and `level` is the [`Level`]
-    /// this window owns.
-    pub fn new(id: WindowId, level: LevelIndex, size: PhysicalSize<u32>) -> Self {
-        Self {
-            id,
-            level,
-            size: Cell::new(size),
-            size_changed: Cell::new(true)
+        if let Some(prq) = &self.prq {
+            let fence = prq
+                .build_root(self.vk_ctx.clone(), surface, &self.window)
+                .expect("failed to execute PRQ");
+            spawn(fence);
         }
     }
 
-    /// Returns the size of the render target.
-    pub fn size(&self) -> PhysicalSize<u32> {
-        self.size.get()
-    }
-}
-
-impl IWindow for ViewportWindow {
-    fn id(&self) -> WindowId {
-        self.id
-    }
-
-    fn level(&self) -> LevelIndex {
-        self.level
-    }
-
-    fn on_resize(&mut self, _world: &World, size: PhysicalSize<u32>) {
-        self.size.set(size);
-        self.size_changed.set(true);
-    }
-
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
-    fn as_any_mut(&mut self) -> &mut dyn Any {
-        self
-    }
-
-    fn before_draw(&mut self) {
-        // TODO
-        let _ = self.size_changed.take();
+    fn set_prq(&mut self, prq: PrimaryRenderingQueue) {
+        self.prq = Some(prq);
     }
 }

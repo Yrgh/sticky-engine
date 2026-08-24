@@ -18,6 +18,7 @@ use vulkano::{
 };
 use winit::{dpi::PhysicalSize, raw_window_handle::HasDisplayHandle};
 
+
 /// Initialization options for the Vulkan context.
 pub struct InitializationOptions<'a> {
     /// A reference to the event loop, if presenting to surfaces is desired. If
@@ -137,6 +138,9 @@ impl VkContext {
         })
     }
 
+    /// Only one swapchain can exist per surface. Use
+    /// [`recreate_swapchain`](Self::recreate_swapchain) for resizes. Use this
+    /// for resumes.
     pub(crate) fn create_swapchain(
         &self,
         surface: Arc<Surface>,
@@ -159,6 +163,38 @@ impl VkContext {
         Ok(Swapchain::new(
             self.device.clone(),
             surface.clone(),
+            SwapchainCreateInfo {
+                min_image_count: caps.min_image_count + 1,
+                image_format,
+                image_extent: size.into(),
+                image_usage: ImageUsage::COLOR_ATTACHMENT,
+                composite_alpha,
+                ..Default::default()
+            },
+        )?)
+    }
+
+    pub(crate) fn recreate_swapchain(
+        &self,
+        original: Arc<Swapchain>,
+        size: PhysicalSize<u32>,
+    ) -> AResult<(Arc<Swapchain>, Vec<Arc<Image>>)> {
+        let caps = self
+            .physical_device
+            .surface_capabilities(original.surface(), Default::default())?;
+
+        let composite_alpha = caps
+            .supported_composite_alpha
+            .into_iter()
+            .next()
+            .expect("no composite alphas");
+        let image_format = self
+            .physical_device
+            .surface_formats(original.surface(), Default::default())?[0]
+            .0;
+
+        Ok(Swapchain::recreate(
+            &original,
             SwapchainCreateInfo {
                 min_image_count: caps.min_image_count + 1,
                 image_format,

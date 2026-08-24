@@ -9,11 +9,12 @@
 use std::{
     any::Any,
     collections::{HashMap, VecDeque},
-    sync::OnceLock,
+    sync::{Arc, OnceLock},
     time::{Duration, Instant},
 };
 
 use anyhow::{Result as AResult, bail};
+use vulkano::{command_buffer::PrimaryCommandBufferAbstract, sync::GpuFuture};
 use winit::{
     application::ApplicationHandler,
     dpi::PhysicalSize,
@@ -54,7 +55,6 @@ struct MainLoop {
 
     stable_accumulator: Instant,
 
-    #[expect(unused)]
     last_idle_time: Instant,
 }
 
@@ -85,35 +85,25 @@ impl MainLoop {
     }
 
     fn render_idle(&mut self) -> AResult<()> {
-        for id in self.world.iter_window_ids() {
-            let mut win = self
-                .world
-                .get_window_mut(id)
-                .expect("window was just acquired");
-            win.before_draw();
-        }
+        // Collect things to render
+
+        let vk_ctx = self.world.get_vk().expect("vulkan is not initialized");
 
         let mut render_tasks =
             self.world
                 .iter_levels()
                 .try_fold(Vec::new(), |mut acc, level| -> AResult<_> {
                     let rq = level.update_rendering_queue();
+
                     let deps = rq.search_dependencies();
-                    let (idle_commands, prq) = rq.build(self.world.get_vk().expect("vulkan is not initialized"))?;
+                    let (idle_commands, prq) = rq.build(vk_ctx.clone())?;
 
-                    // TODO: Populate render_queue
-
-                    acc.push((
-                        level.id(),
-                        deps,
-                        idle_commands,
-                        prq
-                    ));
+                    acc.push((level.id(), deps, idle_commands, prq));
                     Ok(acc)
                 })?;
 
+        // Kahn's
         {
-            // Kahn's
             let n = render_tasks.len();
             let mut in_degree = HashMap::with_capacity(n);
             let mut dependents: HashMap<LevelIndex, Vec<LevelIndex>> = HashMap::with_capacity(n);
@@ -136,7 +126,7 @@ impl MainLoop {
             while let Some(level) = queue.pop_front() {
                 order.push(level);
 
-                for dependent in &dependents[&level] {
+                for dependent in dependents.get(&level).into_iter().flatten() {
                     let Some(indeg) = in_degree.get_mut(dependent) else {
                         continue;
                     };
@@ -160,7 +150,37 @@ impl MainLoop {
             });
         }
 
-        
+        let mut prqs = HashMap::new();
+
+        let queue = vk_ctx.queues[0].clone();
+
+        render_tasks
+            .into_iter()
+            .try_fold(
+                vulkano::sync::now(vk_ctx.device.clone()).boxed_send_sync(),
+                |acc, (lidx, _deps, cb, prq)| -> AResult<_> {
+                    let exec = cb.execute_after(acc, queue.clone())?;
+
+                    Ok(if let Some(mut prq) = prq {
+                        let fence = Arc::new(exec.then_signal_fence());
+                        prq.exec_after = Some(fence.clone());
+                        prqs.insert(lidx, prq);
+                        fence.boxed_send_sync()
+                    } else {
+                        exec.boxed_send_sync()
+                    })
+                },
+            )?
+            .flush()?;
+
+        for mut window in self.world.iter_windows_mut_int() {
+            let lidx = window.level();
+            window.set_prq(prqs.remove(&lidx).expect("window missing a prq"));
+
+            if let Some(os) = window.as_os() {
+                os.request_redraw();
+            }
+        }
 
         Ok(())
     }
@@ -235,15 +255,33 @@ impl ApplicationHandler for MainLoop {
         unsafe { self.world.set_active_event_loop(event_loop) };
 
         if let Some(id) = self.world.window_by_os_id(window_id) {
-            if matches!(&event, WindowEvent::CloseRequested) {
-                if self.world.is_main_window(id) {
-                    event_loop.exit();
-                    self.world.unset_active_event_loop();
-                    return;
+            let mut window = self
+                .world
+                .get_window_mut_int(id)
+                .expect("just got the window ID from the World");
+
+            match event {
+                WindowEvent::CloseRequested => {
+                    if self.world.is_main_window(id) {
+                        event_loop.exit();
+                        drop(window);
+                        self.world.unset_active_event_loop();
+                        return;
+                    }
+                    log!(dbg: "ignoring close request for a non-main window");
                 }
-                log!(dbg: "ignoring close request for a non-main window");
+                WindowEvent::RedrawRequested => {
+                    window.draw();
+                }
+                WindowEvent::Resized(new_size) => {
+                    window.on_resize(&self.world, new_size);
+                }
+                event => {
+                    // Drop window since handle_window_event creates a new borrow
+                    drop(window);
+                    self.world.handle_window_event(id, &event)
+                }
             }
-            self.world.handle_window_event(id, &event);
         } else {
             log!(wrn: "event from unknown window {window_id:?}");
         }
@@ -298,18 +336,22 @@ impl ApplicationHandler for MainLoop {
             }
         }
 
-        let delta = self.world.get_stable_tick_rate().as_secs_f32();
-        for level in self.world.iter_levels() {
-            for id in level.iter_top_level() {
-                id.get_mut(&self.world)
-                    .expect("just acquired")
-                    .idle_hook(&self.world, delta);
-            }
-        }
+        if self.last_idle_time.elapsed() >= self.world.get_idle_min_delay() {
+            let delta = self.last_idle_time.elapsed().as_secs_f32();
+            self.last_idle_time = Instant::now();
 
-        // Only do rendering work when it is at all possible.
-        if self.world.get_vk().is_some() {
-            self.render_idle().expect("failed to render levels");
+            for level in self.world.iter_levels() {
+                for id in level.iter_top_level() {
+                    id.get_mut(&self.world)
+                        .expect("just acquired")
+                        .idle_hook(&self.world, delta);
+                }
+            }
+
+            // Only do rendering work when it is at all possible.
+            if self.world.get_vk().is_some() {
+                self.render_idle().expect("failed to render levels");
+            }
         }
 
         if self.idle(None) {
@@ -322,7 +364,7 @@ impl ApplicationHandler for MainLoop {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         unsafe { self.world.set_active_event_loop(event_loop) };
 
-        for mut window in self.world.iter_windows_mut() {
+        for mut window in self.world.iter_windows_mut_int() {
             window.resume();
         }
 
@@ -332,7 +374,7 @@ impl ApplicationHandler for MainLoop {
     fn suspended(&mut self, event_loop: &ActiveEventLoop) {
         unsafe { self.world.set_active_event_loop(event_loop) };
 
-        for mut window in self.world.iter_windows_mut() {
+        for mut window in self.world.iter_windows_mut_int() {
             window.suspend();
         }
 
