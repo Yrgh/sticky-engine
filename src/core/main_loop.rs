@@ -26,16 +26,20 @@ use winit::{
 use tokio::sync::{mpsc, oneshot};
 
 use crate::{
-    core::{component::ISlotId, level::LevelIndex, world::World},
+    core::{
+        component::ISlotId,
+        level::LevelIndex,
+        world::{WORLD_PTR, World},
+    },
     log,
 };
 
 type Abstract = Box<dyn Any + Send + Sync>;
-type InitFn = Box<dyn FnOnce(&World) + 'static>;
+type InitFn = Box<dyn FnOnce() + 'static>;
 
 pub(crate) enum MainJob {
     Exec {
-        work: Box<dyn FnOnce(&World) -> Abstract + Send + Sync + 'static>,
+        work: Box<dyn FnOnce() -> Abstract + Send + Sync + 'static>,
         send: oneshot::Sender<Abstract>,
     },
     Quit,
@@ -75,7 +79,7 @@ impl MainLoop {
                     // No work if future is dropped.
                     if !send.is_closed() {
                         // Fails if the future is dropped while work is processing.
-                        let _ = send.send(work(&mut self.world));
+                        let _ = send.send(work());
                     }
                 }
                 MainJob::Quit => return true,
@@ -239,7 +243,7 @@ impl ApplicationHandler for MainLoop {
             }
 
             if let Some(init) = self.init_fn.take() {
-                init(&self.world);
+                init();
             }
         }
 
@@ -302,13 +306,8 @@ impl ApplicationHandler for MainLoop {
         while iters < STABLE_SPIRAL_LIMIT && Instant::now() > self.stable_accumulator {
             for level in self.world.iter_levels() {
                 for id in level.iter_top_level() {
-                    let mut comp = id
-                        .get_mut(&self.world)
-                        .expect("component was just acquired");
-                    comp.pre_phys_hook(
-                        &self.world,
-                        self.world.get_stable_tick_rate().as_secs_f32(),
-                    );
+                    let mut comp = id.get_mut().expect("component was just acquired");
+                    comp.pre_phys_hook(self.world.get_stable_tick_rate().as_secs_f32());
                 }
             }
 
@@ -316,13 +315,8 @@ impl ApplicationHandler for MainLoop {
 
             for level in self.world.iter_levels() {
                 for id in level.iter_top_level() {
-                    let mut comp = id
-                        .get_mut(&self.world)
-                        .expect("component was just acquired");
-                    comp.post_phys_hook(
-                        &self.world,
-                        self.world.get_stable_tick_rate().as_secs_f32(),
-                    );
+                    let mut comp = id.get_mut().expect("component was just acquired");
+                    comp.post_phys_hook(self.world.get_stable_tick_rate().as_secs_f32());
                 }
             }
 
@@ -342,9 +336,7 @@ impl ApplicationHandler for MainLoop {
 
             for level in self.world.iter_levels() {
                 for id in level.iter_top_level() {
-                    id.get_mut(&self.world)
-                        .expect("just acquired")
-                        .idle_hook(&self.world, delta);
+                    id.get_mut().expect("just acquired").idle_hook(delta);
                 }
             }
 
@@ -405,7 +397,7 @@ const MAIN_QUEUE_LEN: usize = 16;
 ///
 /// This function must be called exactly once on the main thread. The main loop provides a [`tokio`]
 /// runtime, so do not use `#[tokio::main]`.
-pub unsafe fn run_main_loop(init_fn: impl FnOnce(&World) + 'static, headless: bool) -> AResult<()> {
+pub unsafe fn run_main_loop(init_fn: impl FnOnce() + 'static, headless: bool) -> AResult<()> {
     let (job_tx, job_rx) = mpsc::channel(MAIN_QUEUE_LEN);
     let mut main_loop = MainLoop {
         tokio_rt: tokio::runtime::Runtime::new()?,
@@ -425,6 +417,8 @@ pub unsafe fn run_main_loop(init_fn: impl FnOnce(&World) + 'static, headless: bo
         last_idle_time: Instant::now(),
     };
 
+    WORLD_PTR.set(&main_loop.world);
+
     RT_HANDLE
         .set(main_loop.tokio_rt.handle().clone())
         .expect("no other sources should set RT_HANDLE");
@@ -436,6 +430,8 @@ pub unsafe fn run_main_loop(init_fn: impl FnOnce(&World) + 'static, headless: bo
     let event_loop = EventLoop::new()?;
     event_loop.set_control_flow(winit::event_loop::ControlFlow::Poll);
     event_loop.run_app(&mut main_loop)?;
+
+    WORLD_PTR.set(std::ptr::null());
 
     Ok(())
 }

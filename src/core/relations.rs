@@ -126,8 +126,13 @@ impl Relations {
     /// 
     /// `tyid` is the [`TypeId`] of the *self type*. `trid` is the `TypeId` of
     /// the *trait object* for the requested trait.
+    /// 
+    /// There is one important, kind of hacky facet: **if `tyid == trid` this
+    /// also returns `true`**. This is because a
+    /// [`ComponentId<C>`](crate::core::component::ComponentId) calls `C` its
+    /// "trait object", despite `C` being concrete.
     pub fn implements(&self, tyid: TypeId, trid: TypeId) -> bool {
-        self.ty_converts.contains_key(&(tyid, trid))
+        tyid == trid || self.ty_converts.contains_key(&(tyid, trid))
     }
 }
 

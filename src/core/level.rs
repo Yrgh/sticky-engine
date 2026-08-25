@@ -1,5 +1,5 @@
 //! Distinct Component containers.
-//! 
+//!
 //! In this engine, Components are divided up into [`Level`]s. Each `Level`
 //! contains a list of Components inside and a list of top-level Components.
 //! Each `Level` renders and simulates physics independently.
@@ -13,8 +13,13 @@ use elsa::FrozenMap;
 
 use crate::{
     core::{
-        component::{ComponentId, DynComponentId, IComponent, ISlotId}, relations::{BuildTypeIdHasher, RELATIONS}, renderer::{PrimaryRenderingQueue, RenderingQueue}, window::WindowId, world::World,
-    }, log,
+        ComponentGetError, ComponentGetMutError,
+        component::{ComponentId, DynComponentId, IComponent, ISlotId},
+        relations::{BuildTypeIdHasher, RELATIONS},
+        renderer::RenderingQueue,
+        window::WindowId,
+    },
+    log,
 };
 
 trait IColumn: Any {
@@ -22,10 +27,14 @@ trait IColumn: Any {
 
     fn remove(&self, pidx: u32, gidx: u32);
 
-    fn get_pairs(&self) -> Box<dyn Iterator<Item=(u32, u32)> + '_>;
+    fn get_pairs(&self) -> Box<dyn Iterator<Item = (u32, u32)> + '_>;
 
-    fn get_dyn(&self, pidx: u32, gidx: u32) -> Option<Ref<'_, dyn IComponent>>;
-    fn get_dyn_mut(&self, pidx: u32, gidx: u32) -> Option<RefMut<'_, dyn IComponent>>;
+    fn get_dyn(&self, pidx: u32, gidx: u32) -> Result<Ref<'_, dyn IComponent>, ComponentGetError>;
+    fn get_dyn_mut(
+        &self,
+        pidx: u32,
+        gidx: u32,
+    ) -> Result<RefMut<'_, dyn IComponent>, ComponentGetMutError>;
 }
 
 struct Column<C: IComponent> {
@@ -35,8 +44,20 @@ struct Column<C: IComponent> {
 }
 
 impl<C: IComponent> Column<C> {
-    fn get_mut(&self, pidx: u32) -> Option<RefMut<'_, (u32, SlotValue<C>)>> {
-        Some(self.slots.get(pidx as usize)?.borrow_mut())
+    fn get(&self, pidx: u32) -> Result<Ref<'_, (u32, SlotValue<C>)>, ComponentGetError> {
+        Ok(self
+            .slots
+            .get(pidx as usize)
+            .ok_or(ComponentGetError::NotFound)?
+            .try_borrow()?)
+    }
+
+    fn get_mut(&self, pidx: u32) -> Result<RefMut<'_, (u32, SlotValue<C>)>, ComponentGetMutError> {
+        Ok(self
+            .slots
+            .get(pidx as usize)
+            .ok_or(ComponentGetMutError::NotFound)?
+            .try_borrow_mut()?)
     }
 }
 
@@ -46,7 +67,7 @@ impl<C: IComponent> IColumn for Column<C> {
     }
 
     fn remove(&self, pidx: u32, gidx: u32) {
-        let Some(mut storage) = self.get_mut(pidx) else {
+        let Ok(mut storage) = self.get_mut(pidx) else {
             return;
         };
 
@@ -58,24 +79,23 @@ impl<C: IComponent> IColumn for Column<C> {
         }
     }
 
-    fn get_pairs(&self) -> Box<dyn Iterator<Item=(u32, u32)> + '_> {
-        Box::new(
-            self.slots
-                .iter()
-                .filter_map(|(pidx, storage)| {
-                    let b = storage.borrow();
-                    if let SlotValue::Occupied(_) = &b.1 {
-                        Some((pidx as u32, b.0))
-                    } else {
-                        None
-                    }
-                })
-        )
+    fn get_pairs(&self) -> Box<dyn Iterator<Item = (u32, u32)> + '_> {
+        Box::new(self.slots.iter().filter_map(|(pidx, storage)| {
+            let b = storage.borrow();
+            if let SlotValue::Occupied(_) = &b.1 {
+                Some((pidx as u32, b.0))
+            } else {
+                None
+            }
+        }))
     }
 
-    fn get_dyn(&self, pidx: u32, gidx: u32) -> Option<Ref<'_, dyn IComponent>> {
+    fn get_dyn(&self, pidx: u32, gidx: u32) -> Result<Ref<'_, dyn IComponent>, ComponentGetError> {
         Ref::filter_map(
-            self.slots.get(pidx as usize)?.borrow(),
+            self.slots
+                .get(pidx as usize)
+                .ok_or(ComponentGetError::NotFound)?
+                .try_borrow()?,
             |s| -> Option<&dyn IComponent> {
                 if s.0 == gidx
                     && let SlotValue::Occupied(c) = &s.1
@@ -86,12 +106,19 @@ impl<C: IComponent> IColumn for Column<C> {
                 }
             },
         )
-        .ok()
+        .map_err(|_| ComponentGetError::NotFound)
     }
 
-    fn get_dyn_mut(&self, pidx: u32, gidx: u32) -> Option<RefMut<'_, dyn IComponent>> {
+    fn get_dyn_mut(
+        &self,
+        pidx: u32,
+        gidx: u32,
+    ) -> Result<RefMut<'_, dyn IComponent>, ComponentGetMutError> {
         RefMut::filter_map(
-            self.slots.get(pidx as usize)?.borrow_mut(),
+            self.slots
+                .get(pidx as usize)
+                .ok_or(ComponentGetMutError::NotFound)?
+                .try_borrow_mut()?,
             |s| -> Option<&mut dyn IComponent> {
                 if s.0 == gidx
                     && let SlotValue::Occupied(c) = &mut s.1
@@ -102,7 +129,7 @@ impl<C: IComponent> IColumn for Column<C> {
                 }
             },
         )
-        .ok()
+        .map_err(|_| ComponentGetMutError::NotFound)
     }
 }
 
@@ -125,7 +152,7 @@ pub struct Level {
 
     rendering_queue: RefCell<RenderingQueue>,
 
-    window: Option<WindowId>,
+    window: Cell<Option<WindowId>>,
 }
 
 impl Level {
@@ -135,23 +162,17 @@ impl Level {
             component_columns: FrozenMap::default(),
             top_level: RefCell::new(Vec::new()),
             rendering_queue: RefCell::new(RenderingQueue::new()),
-            window: None,
+            window: Cell::new(None),
         }
     }
 
-    pub(crate) fn for_window(self_idx: LevelIndex, window: WindowId) -> Self {
-        Self {
-            self_idx: Cell::new(Some(self_idx)),
-            component_columns: FrozenMap::default(),
-            top_level: RefCell::new(Vec::new()),
-            rendering_queue: RefCell::new(RenderingQueue::new()),
-            window: Some(window),
-        }
+    pub(crate) fn set_window(&self, window: WindowId) {
+        self.window.set(Some(window));
     }
 
     /// Returns the index of the bound window, if there is any.
     pub fn get_window(&self) -> Option<WindowId> {
-        self.window
+        self.window.get()
     }
 
     /// Returns the [`LevelIndex`] that accesses this `Level`.
@@ -165,6 +186,10 @@ impl Level {
     /// WARNING: This method is safe to use, but is intended to be used
     /// internally. It is only made public so it can be generated by a macro.
     /// Only use this if you know what you are doing.
+    ///
+    /// # Borrows
+    ///
+    /// Attempts to mutably borrow the targeted Component's slot.
     pub fn remove_component_internal(&self, tyid: TypeId, pidx: u32, gidx: u32) {
         let Some(column) = self.component_columns.get(&tyid) else {
             return;
@@ -179,6 +204,10 @@ impl Level {
     /// WARNING: This method is safe to use, but is intended to be used
     /// internally. It is only made public so it can be generated by a macro.
     /// Only use this if you know what you are doing.
+    ///
+    /// # Borrows
+    ///
+    /// Mutably borrows the destination slot.
     pub fn insert_component_internal<C: IComponent>(&self, value: C) -> ComponentId<C> {
         let column = match self.component_columns.get(&TypeId::of::<C>()) {
             Some(o) => o,
@@ -202,7 +231,7 @@ impl Level {
 
         match column.free_head.get() {
             Some(head) => {
-                let Some(mut storage) = column.get_mut(head) else {
+                let Ok(mut storage) = column.get_mut(head) else {
                     unreachable!("free head should always point to an allocated slot")
                 };
 
@@ -235,6 +264,10 @@ impl Level {
     /// WARNING: This method is safe to use, but is intended to be used
     /// internally. It is only made public so it can be generated by a macro.
     /// Only use this if you know what you are doing.
+    ///
+    /// # Borrows
+    ///
+    /// Mutably borrows the reserved slot.
     pub fn reserve_slot_internal<C: IComponent>(&self) -> ComponentId<C> {
         let column = match self.component_columns.get(&TypeId::of::<C>()) {
             Some(o) => o,
@@ -258,7 +291,7 @@ impl Level {
 
         match column.free_head.get() {
             Some(head) => {
-                let Some(mut storage) = column.get_mut(head) else {
+                let Ok(mut storage) = column.get_mut(head) else {
                     unreachable!("free head should always point to an allocated slot")
                 };
 
@@ -289,6 +322,10 @@ impl Level {
     /// WARNING: This method is safe to use, but is intended to be used
     /// internally. It is only made public so it can be generated by a macro.
     /// Only use this if you know what you are doing.
+    ///
+    /// # Borrows
+    ///
+    /// Mutably borrows the targeted slot.
     pub fn fill_slot_internal<C: IComponent>(&self, pidx: u32, gidx: u32, value: C) {
         let Some(column) = self.component_columns.get(&TypeId::of::<C>()) else {
             return;
@@ -302,7 +339,7 @@ impl Level {
             return;
         };
 
-        let Some(mut storage) = column.get_mut(pidx) else {
+        let Ok(mut storage) = column.get_mut(pidx) else {
             return;
         };
 
@@ -322,20 +359,29 @@ impl Level {
     /// WARNING: This method is safe to use, but is intended to be used
     /// internally. It is only made public so it can be generated by a macro.
     /// Only use this if you know what you are doing.
+    ///
+    /// # Borrows
+    ///
+    /// Immutably borrows the Component's slot until the returned
+    /// [`Ref`] is dropped.
     pub fn acquire_component_internal<C: IComponent>(
         &self,
         pidx: u32,
         gidx: u32,
-    ) -> Option<Ref<'_, C>> {
-        let column = self.component_columns.get(&TypeId::of::<C>())?;
+    ) -> Result<Ref<'_, C>, ComponentGetError> {
+        let column = self
+            .component_columns
+            .get(&TypeId::of::<C>())
+            .ok_or(ComponentGetError::NotFound)?;
 
         if pidx >= column.len() {
-            return None;
+            Err(ComponentGetError::NotFound)?;
         }
 
-        let column = <dyn Any>::downcast_ref::<Column<C>>(column)?;
+        let column =
+            <dyn Any>::downcast_ref::<Column<C>>(column).ok_or(ComponentGetError::NotFound)?;
 
-        let storage = column.slots.get(pidx as usize)?.borrow();
+        let storage = column.get(pidx)?;
 
         Ref::filter_map(storage, |storage| {
             if gidx != storage.0 {
@@ -347,7 +393,7 @@ impl Level {
                 SlotValue::Vacant(_) | SlotValue::Reserved => None,
             }
         })
-        .ok()
+        .map_err(|_| ComponentGetError::NotFound)
     }
 
     #[doc(hidden)]
@@ -356,18 +402,27 @@ impl Level {
     /// WARNING: This method is safe to use, but is intended to be used
     /// internally. It is only made public so it can be generated by a macro.
     /// Only use this if you know what you are doing.
+    ///
+    /// # Borrows
+    ///
+    /// Mutably borrows the Component's slot until the returned
+    /// [`RefMut`] is dropped.
     pub fn acquire_component_internal_mut<C: IComponent>(
         &self,
         pidx: u32,
         gidx: u32,
-    ) -> Option<RefMut<'_, C>> {
-        let column = self.component_columns.get(&TypeId::of::<C>())?;
+    ) -> Result<RefMut<'_, C>, ComponentGetMutError> {
+        let column = self
+            .component_columns
+            .get(&TypeId::of::<C>())
+            .ok_or(ComponentGetMutError::NotFound)?;
 
         if pidx >= column.len() {
-            return None;
+            Err(ComponentGetMutError::NotFound)?;
         }
 
-        let column = <dyn Any>::downcast_ref::<Column<C>>(column)?;
+        let column =
+            <dyn Any>::downcast_ref::<Column<C>>(column).ok_or(ComponentGetMutError::NotFound)?;
 
         let storage = column.get_mut(pidx)?;
 
@@ -381,7 +436,7 @@ impl Level {
                 SlotValue::Vacant(_) | SlotValue::Reserved => None,
             }
         })
-        .ok()
+        .map_err(|_| ComponentGetMutError::NotFound)
     }
 
     #[doc(hidden)]
@@ -390,13 +445,21 @@ impl Level {
     /// WARNING: This method is safe to use, but is intended to be used
     /// internally. It is only made public so it can be generated by a macro.
     /// Only use this if you know what you are doing.
+    ///
+    /// # Borrows
+    ///
+    /// Immutably borrows the Component's slot until the returned
+    /// [`Ref`] is dropped.
     pub fn acquire_component_internal_dyn(
         &self,
         tyid: TypeId,
         pidx: u32,
         gidx: u32,
-    ) -> Option<Ref<'_, dyn IComponent>> {
-        let column = self.component_columns.get(&tyid)?;
+    ) -> Result<Ref<'_, dyn IComponent>, ComponentGetError> {
+        let column = self
+            .component_columns
+            .get(&tyid)
+            .ok_or(ComponentGetError::NotFound)?;
 
         column.get_dyn(pidx, gidx)
     }
@@ -407,13 +470,21 @@ impl Level {
     /// WARNING: This method is safe to use, but is intended to be used
     /// internally. It is only made public so it can be generated by a macro.
     /// Only use this if you know what you are doing.
+    ///
+    /// # Borrows
+    ///
+    /// Mutably borrows the Component's slot until the returned
+    /// [`RefMut`] is dropped.
     pub fn acquire_component_internal_dyn_mut(
         &self,
         tyid: TypeId,
         pidx: u32,
         gidx: u32,
-    ) -> Option<RefMut<'_, dyn IComponent>> {
-        let column = self.component_columns.get(&tyid)?;
+    ) -> Result<RefMut<'_, dyn IComponent>, ComponentGetMutError> {
+        let column = self
+            .component_columns
+            .get(&tyid)
+            .ok_or(ComponentGetMutError::NotFound)?;
 
         column.get_dyn_mut(pidx, gidx)
     }
@@ -424,11 +495,14 @@ impl Level {
     /// WARNING: This method is safe to use, but is intended to be used
     /// internally. It is only made public so it can be generated by a macro.
     /// Only use this if you know what you are doing.
-    pub fn destroy_internal(&self, world: &World) {
+    ///
+    /// # Borrows
+    /// Mutably borrows all Components and descendants.
+    pub fn destroy_internal(&self) {
         for top_id in self.top_level.borrow_mut().drain(..) {
             let (top_pidx, top_gidx, top_tyid) = top_id.acquire_parts();
-            let mut top = top_id.get_mut(world).expect("just acquired from top");
-            top.destroy_hook(world);
+            let mut top = top_id.get_mut().expect("just acquired from top");
+            top.destroy_hook();
             drop(top);
 
             self.remove_component_internal(top_tyid, top_pidx, top_gidx);
@@ -436,9 +510,10 @@ impl Level {
     }
 
     /// Spawn a new Component at the end of the top level list.
-    pub fn spawn_top_level<C: IComponent>(&self, world: &World) -> ComponentId<C> {
-        let id = C::spawn(world, self.id().into());
+    pub fn spawn_top_level<C: IComponent>(&self, info: C::SpawnInfo) -> ComponentId<C> {
+        let id = C::spawn(self.id().into(), info);
         self.top_level.borrow_mut().push(id.clone().into());
+        id.get_mut().expect("component was just added").post_init_hook();
         id
     }
 
@@ -453,16 +528,25 @@ impl Level {
     }
 
     /// Removes a Component from the top level list *by position*.
-    pub fn remove_top_level(&self, position: usize, world: &World) {
+    ///
+    /// # Borrows
+    ///
+    /// Mutably borrows the removed Component's slot, and the removed Component
+    /// plus all of its descendants (recursively) via
+    /// [`destroy_hook`](IComponent::destroy_hook).
+    pub fn remove_top_level(&self, position: usize) {
         let id = self.top_level.borrow_mut().remove(position);
-        id.get_mut(world)
-            .expect("id is in world")
-            .destroy_hook(world);
+        id.get_mut().expect("id is in world").destroy_hook();
         let (pidx, gidx, tyid) = id.acquire_parts();
         self.remove_component_internal(tyid, pidx, gidx);
     }
 
     /// Returns an iterator over all Components of a given type, as *immutable* borrows.
+    ///
+    /// # Borrows
+    ///
+    /// Immutably borrows each occupied slot of type `C` while iterating; each
+    /// yielded [`Ref`] holds its borrow until dropped.
     pub fn iter_type<'a, C: IComponent>(&'a self) -> Box<dyn Iterator<Item = Ref<'a, C>> + 'a> {
         let Some(column) = self.component_columns.get(&TypeId::of::<C>()) else {
             return Box::new(std::iter::empty());
@@ -479,6 +563,11 @@ impl Level {
     }
 
     /// Returns an iterator over all Components of a given type, as *mutable* borrows.
+    ///
+    /// # Borrows
+    ///
+    /// Mutably borrows each occupied slot of type `C` while iterating; each
+    /// yielded [`RefMut`] holds its borrow until dropped.
     pub fn iter_type_mut<'a, C: IComponent>(
         &'a self,
     ) -> Box<dyn Iterator<Item = RefMut<'a, C>> + 'a> {
@@ -497,23 +586,30 @@ impl Level {
     }
 
     /// Returns a list of all Components in the `Level` that can be identified by `D`.
+    ///
+    /// # Borrows
+    ///
+    /// Transiently immutably borrows each matching Component's slot during
+    /// iteration.
     pub fn all_matching_ids<D: ISlotId>(&self) -> impl Iterator<Item = D> {
         let self_id = self.id();
-        RELATIONS
-            .iter_slot_tys::<D>()
-            .flat_map(move |tyid| {
-                // If the column exists, get all components in it.
-                // If it doesn't, we need to match the type, so create a new Box
-                match self.component_columns.get(&tyid) {
-                    Some(column) => column.get_pairs(),
-                    None => Box::new(std::iter::empty()),
-                }
-                .map(move |(pidx, gidx)| unsafe {
-                    D::from_parts(pidx, gidx, self_id, tyid)
-                })
-            })
+        RELATIONS.iter_slot_tys::<D>().flat_map(move |tyid| {
+            // If the column exists, get all components in it.
+            // If it doesn't, we need to match the type, so create a new Box
+            match self.component_columns.get(&tyid) {
+                Some(column) => column.get_pairs(),
+                None => Box::new(std::iter::empty()),
+            }
+            .map(move |(pidx, gidx)| unsafe { D::from_parts(pidx, gidx, self_id, tyid) })
+        })
     }
 
+    /// Returns a shared handle to this Level's rendering queue.
+    ///
+    /// # Borrows
+    ///
+    /// Immutably borrows the rendering queue until the returned
+    /// [`Ref`] is dropped.
     pub(crate) fn update_rendering_queue(&self) -> Ref<'_, RenderingQueue> {
         // TODO: Actually update the rendering queue
 
@@ -521,11 +617,11 @@ impl Level {
     }
 }
 
-/// Non-owning index within the [`World`] of a [`Level`].
+/// Non-owning index within the [`World`](crate::core::world::World) of a [`Level`].
 #[derive(Clone, Copy, Hash, PartialEq, Eq, Debug)]
 pub struct LevelIndex(pub(crate) u32, pub(crate) u32);
 
-/// Singly-owning index within the [`World`] of a [`Level`].
+/// Singly-owning index within the [`World`](crate::core::world::World) of a [`Level`].
 #[derive(Hash)]
 pub struct LevelIndexOwned(pub(crate) u32, pub(crate) u32);
 
@@ -535,8 +631,9 @@ impl LevelIndexOwned {
         LevelIndex(self.0, self.1)
     }
 
-    /// Leaks the index. The [`Level`] will live until the [`World`] is dropped.
-    /// 
+    /// Leaks the index. The [`Level`] will live until the
+    /// [`World`](crate::core::world::World) is dropped.
+    ///
     /// Avoid silent-dropping a `LevelIndexOwned`, as it logs an error unless
     /// you call this manually.
     pub fn leak(mut self) {

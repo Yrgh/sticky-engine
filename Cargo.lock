@@ -2155,6 +2155,7 @@ dependencies = [
  "rapier3d",
  "smallvec",
  "sticky-engine-macros",
+ "thiserror 2.0.20",
  "tokio",
  "vulkano",
  "winit",

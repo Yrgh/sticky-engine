@@ -6,17 +6,8 @@
 //! - [`RootWindow`] - a real, on-screen window created by the OS. Receives
 //!   input.
 //!
-//! - [`ViewportWindow`] - an off-screen window that renders to a texture and
-//!   receives no input. Its contents can be composited onto another window.
-//!
-//! - Virtual windows - windows with no OS presence, used when the platform has
-//!   no multi-window support or when explicitly requested. These are not yet
-//!   implemented, but can be added seamlessly by implementing [`IWindow`] and
-//!   registering it with [`World::create_window`].
-//!
 //! Windows are owned by the [`World`]. Create them with
-//! [`World::create_window`], [`World::create_root_window`], or
-//! [`World::create_viewport_window`], and destroy them with
+//! [`World::create_root_window`], and destroy them with
 //! [`World::destroy_window`].
 
 use std::{any::Any, cell::Cell, sync::Arc};
@@ -26,11 +17,7 @@ use vulkano::{
     image::Image,
     swapchain::{Surface, Swapchain},
 };
-use winit::{
-    dpi::PhysicalSize,
-    event::WindowEvent,
-    window::{Window as OsWindow, WindowId as OsWindowId},
-};
+use winit::{dpi::PhysicalSize, event::WindowEvent, window::Window as OsWindow};
 
 use crate::{
     core::{
@@ -47,14 +34,14 @@ mod private {
 
 pub use private::Sealed;
 
-/// Non-owning handle to a [`Window`] within the [`World`].
+/// Non-owning handle to an [`IWindow`] within the [`World`].
 ///
 /// This handle is lightweight and cheap to copy. It does **not** keep the
 /// window alive; use [`WindowIdOwned`] for that.
 #[derive(Clone, Copy, Hash, PartialEq, Eq, Debug)]
 pub struct WindowId(pub(crate) u32, pub(crate) u32);
 
-/// Singly-owning handle to a [`Window`].
+/// Singly-owning handle to an [`IWindow`].
 ///
 /// The window lives until it is explicitly destroyed with
 /// [`World::destroy_window`]. Dropping this handle without destroying or
@@ -114,14 +101,13 @@ pub(crate) trait IWindowInt: Any {
 /// Base trait for all windows.
 ///
 /// Windows come in several flavors, each owning exactly one
-/// [`Level`](crate::core::level::Level). To add a new kind of window, such as
-/// a virtual window, implement this trait and register it with
-/// [`World::create_window`].
+/// [`Level`](crate::core::level::Level).
 pub trait IWindow: Sealed {
     /// Returns the ID of this window.
     fn id(&self) -> WindowId;
 
-    /// Returns the [`LevelIndex`] of the [`Level`] this window owns.
+    /// Returns the [`LevelIndex`] of the [`Level`](crate::core::level::Level)
+    /// this window owns.
     fn level(&self) -> LevelIndex;
 
     /// Returns the OS window backing this window, if any.
@@ -146,7 +132,7 @@ impl<T: IWindowInt> IWindow for T {
         <Self as IWindowInt>::id_i(self)
     }
 
-    /// Returns the [`LevelIndex`] of the [`Level`] this window owns.
+    /// Returns the [`LevelIndex`] of the [`Level`](crate::core::level::Level) this window owns.
     fn level(&self) -> LevelIndex {
         <Self as IWindowInt>::level_i(self)
     }
@@ -168,6 +154,7 @@ impl<T: IWindowInt> IWindow for T {
 }
 
 pub(crate) struct RootWindowSurface {
+    #[expect(unused)]
     pub(crate) surface: Arc<Surface>,
     pub(crate) swapchain: Arc<Swapchain>,
     pub(crate) swapchain_images: SmallVec<[Arc<Image>; 3]>,
@@ -190,8 +177,8 @@ pub struct RootWindow {
 impl RootWindow {
     /// Creates a new root window.
     ///
-    /// The `id` is assigned by the [`World`], and `level` is the [`Level`]
-    /// this window owns.
+    /// The `id` is assigned by the [`World`], and `level` is the
+    /// [`Level`](crate::core::level::Level) this window owns.
     pub fn new(id: WindowId, level: LevelIndex, window: OsWindow, vk_ctx: Arc<VkContext>) -> Self {
         let size = window.inner_size();
         Self {
@@ -252,7 +239,7 @@ impl IWindowInt for RootWindow {
 
     fn resume(&mut self) {
         log!(dbg: "resuming... (size: {:?})", self.size.get());
-        
+
         let surface = Surface::from_window(self.vk_ctx.instance.clone(), self.window.clone())
             .expect("failed to create surface");
 
@@ -278,7 +265,7 @@ impl IWindowInt for RootWindow {
 
         if self.swapchain_invalid.take() {
             log!(dbg: "recreating swapchain... (size: {:?})", self.size.get());
-            
+
             let (swapchain, swapchain_images) = self
                 .vk_ctx
                 .recreate_swapchain(surface.swapchain.clone(), self.size.get())

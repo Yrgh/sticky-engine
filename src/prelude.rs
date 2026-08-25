@@ -1,7 +1,6 @@
 //! Important imports such as macros, traits, and the foundations of the engine.
 
 pub use super::core::{
-    world::World,
     trans::*,
     component::{ComponentId, ComponentParent, DynComponentId, IComponent, ISlotId},
     level::LevelIndex,

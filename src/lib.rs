@@ -1,8 +1,9 @@
 //! Sticky game engine
 //! 
-//! Far too many game engines are based on inheritance, and far too few support
-//! Rust. Furthermore, many engines come back to the idea of a tree-like
-//! structure, as seen in UE5 and Godot. This engine aims to solve all 3.
+//! Sticky offers a Rust-based *strictly-typed tree*. In most engines with a
+//! tree, any node can be the child of any other. In Sticky, a node decides both
+//! the types and number of nodes it has as children. Furthermore, Sticky allows
+//! you to iterate by type like an ECS if you wish.
 //! 
 //! Sticky works off the idea of a *"Component"*, a single node in the tree.
 //! Each Component type defines what types and how many children it has.
@@ -25,20 +26,26 @@
 //! 
 //! The engine supports async based on [`tokio`]. See [`core::task`] for
 //! utilities. The engine's entry point is
-//! [`run_main_loop`](core::main_loop::run_main_loop), which must be called on
-//! the main thread exactly once and provides a runtime. Do not add the
-//! [`tokio::main`] attribute to your `main` function.
+//! [`run_main_loop`](prelude::run_main_loop), which must be called on the main
+//! thread exactly once and provides a runtime. Do not add the [`tokio::main`]
+//! attribute to your `main` function.
 //! 
 //! Rendering happens through [`Window`](core::window)s. Each window owns a
 //! [`Level`](core::level::Level). On-screen windows are represented by
-//! [`RootWindow`](core::window::RootWindow), while off-screen render targets
-//! are [`ViewportWindow`](core::window::ViewportWindow)s. See [`core::window`].
+//! [`RootWindow`](core::window::RootWindow)
 //! 
+//! # Reading the documentation
 //! 
+//! Many functions will have a "Borrows" section that describes which Components
+//! or other [`RefCell`](std::cell::RefCell)s the function will or may borrow,
+//! and whether the borrow is immutable or mutable. These are warnings, as some
+//! functions may fail (see [`ComponentGetError`](core::ComponentGetError)) or
+//! unexpectedly panic unless you respect the borrowing rules.
 
 #![warn(clippy::all)]
 #![deny(clippy::unwrap_used, clippy::expect_fun_call, clippy::todo, missing_docs)]
-#![allow(clippy::arc_with_non_send_sync)]
+
+pub use rapier3d;
 
 pub use sticky_engine_macros::{comp_def, slot_def, slot_impl};
 
@@ -46,3 +53,4 @@ pub mod builtin;
 pub mod core;
 pub mod logging;
 pub mod prelude;
+

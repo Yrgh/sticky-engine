@@ -4,21 +4,20 @@
 //! doesn't work outside of a runtime. [`spawn`] works regardless of where it is
 //! called, as long as the main loop is still running.
 //! 
-//! Because Components and the [`World`] run on the main thread, an async task
-//! cannot interact with the rest of the engine without a channel. However, the
-//! [`join_main`] function allows your task to join the main loop and gain
-//! access to the `World`.
+//! Because Components and the [`World`](crate::core::world::World) run on the
+//! main thread, an async task cannot interact with the rest of the engine
+//! without a channel. However, the [`join_main`] function allows your task to
+//! join the main loop and gain access to the `World`.
 
 use std::any::Any;
 
 use tokio::sync::oneshot;
 
 use crate::core::{
-    world::World,
     main_loop::{MAIN_QUEUE, MainJob, RT_HANDLE},
 };
 
-/// Runs a closure on the main thread with access to the [`World`].
+/// Runs a closure on the main thread with access to the [`World`](crate::core::world::World).
 ///
 /// Components, and therefore [`Level`](crate::core::level::Level)s and the
 /// `World`, are [`!Send`](Send) + [`!Sync`](Sync), due to being stored in
@@ -27,13 +26,13 @@ use crate::core::{
 ///
 /// # Panics
 /// If the function is called outside of the main loop.
-pub async fn join_main<T: Any + Send + Sync, F: FnOnce(&World) -> T + Send + Sync + 'static>(
+pub async fn join_main<T: Any + Send + Sync, F: FnOnce() -> T + Send + Sync + 'static>(
     f: F,
 ) -> T {
     let mq = MAIN_QUEUE.get().expect("main loop not initialized yet");
     let (tx, rx) = oneshot::channel();
     mq.send(MainJob::Exec {
-        work: Box::new(|world| Box::new(f(world))),
+        work: Box::new(|| Box::new(f())),
         send: tx,
     })
     .await

@@ -76,7 +76,7 @@ impl PrimaryRenderingQueue {
         )?;
 
         let Some(future) = self.exec_after.clone() else {
-            bail!("no exec_after future");
+            bail!("no exec_after future")
         };
 
         // TODO: Send is_suboptimal to the window

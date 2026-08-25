@@ -1,4 +1,4 @@
-use sticky_engine::prelude::*;
+use sticky_engine::{core::world::world, prelude::*};
 
 comp_def! {
     (in sticky_engine)
@@ -10,10 +10,11 @@ comp_def! {
             trans: Trans3ProviderRelative,
         }
         behaviors {
+            #[init]
             fn init(
-                _world: &World,
                 parent: ComponentParent,
-                _self_id: ComponentId<Self>
+                _self_id: ComponentId<Self>,
+                _: u32
             ) -> CRelInit {
                 CRelInit {
                     trans: Trans3ProviderRelative::new(&parent)
@@ -39,18 +40,29 @@ comp_def! {
     struct CTop {
         components {
             static rel: CRel,
+            dyn rel2: CRel,
+            dyn? opt_rel: dyn STrans3,
+            dyn* many: dyn STrans3,
         }
         variables {
             trans: Trans3ProviderTop,
         }
         behaviors {
+            use crate::*;
+            
+            #[init]
             fn init(
-                _world: &World,
                 parent: ComponentParent,
-                _self_id: ComponentId<Self>
+                self_id: ComponentId<Self>,
+                _: ()
             ) -> CTopInit {
+                let kid = || CRel::spawn(self_id.clone().into(), 0);
                 CTopInit {
-                    trans: Trans3ProviderTop::new(&parent)
+                    trans: Trans3ProviderTop::new(&parent),
+                    rel: kid(),
+                    rel2: kid(),
+                    opt_rel: Some(kid().into()),
+                    many: vec![kid().into(), kid().into()],
                 }
             }
         }
@@ -71,10 +83,10 @@ impl STrans3 for CTop {
 fn main() {
     unsafe {
         run_main_loop(
-            |world| {
+            || {
                 log!(dbg: "main loop started");
-                let main_level = world.main_level().expect("main level");
-                main_level.spawn_top_level::<CTop>(world);
+                let main_level = world().main_level().expect("main level");
+                main_level.spawn_top_level::<CTop>(());
             },
             false,
         )

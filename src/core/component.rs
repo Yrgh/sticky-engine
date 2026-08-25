@@ -16,7 +16,7 @@ pub trait ToDyn<D: Any + ?Sized>: Any {
     fn to_dyn_mut(&mut self) -> &mut D;
 }
 
-/// Hacky but necessary for ComponentId<T> to work with ISlotId
+/// Hacky but necessary for `ComponentId<T>` to work with ISlotId
 impl<T: Any + ?Sized> ToDyn<T> for T {
     fn to_dyn(&self) -> &T {
         self

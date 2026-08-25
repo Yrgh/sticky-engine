@@ -2,7 +2,7 @@
 //!
 //! The [`World`] is created once and shared far and wide. Everything in the [`World`] relies on
 //! non-blocking interior mutability, meaning the [`World`] cannot be shared across threads. The
-//! [`World`] contains all [`Level`]s, [`Window`]s, and Components.
+//! [`World`] contains all [`Level`]s, [`IWindow`]s, and Components.
 use std::{
     cell::{Cell, OnceCell, Ref, RefCell, RefMut},
     collections::VecDeque,
@@ -34,6 +34,25 @@ enum LevelStorage {
 enum WindowStorage {
     Occupied(LevelIndexOwned, Box<dyn IWindowBoth>),
     Vacant(Option<usize>),
+}
+
+thread_local! {
+    pub(crate) static WORLD_PTR: Cell<*const World> = const { Cell::new(std::ptr::null()) };
+}
+
+/// Retrieves the World instance.
+///
+/// Calling this
+///
+/// # Panics
+/// If outside the main thread, or outside the main loop.
+pub fn world() -> &'static World {
+    let ptr = WORLD_PTR.get();
+    if ptr.is_null() {
+        panic!("called `world()` either from outside the main thread or outside of the main loop")
+    } else {
+        unsafe { &*ptr }
+    }
 }
 
 /// The entire context of the engine, including Components.
@@ -151,8 +170,13 @@ impl World {
         self.min_idle_delay.set(rate);
     }
 
+    /// Processes all queued level/window deletions.
+    ///
+    /// # Borrows
+    ///
+    /// Mutably borrows the storage slot of each destroyed window.
     pub(crate) fn flush_actions(&mut self) {
-        while let Some(action) = self.action_queue.borrow_mut().pop_front() {
+        while let Some(action) = self.action_queue.get_mut().pop_front() {
             match action {
                 WorldAction::DeleteLevel(level) => {
                     // # Safety
@@ -167,7 +191,7 @@ impl World {
                     };
 
                     if let LevelStorage::Occupied(level) = &s.1 {
-                        level.destroy_internal(self)
+                        level.destroy_internal()
                     }
 
                     s.0 = s.0.wrapping_add(1);
@@ -331,6 +355,10 @@ impl World {
     ///
     /// This must be called from within the main loop, where an event loop is
     /// active.
+    ///
+    /// # Borrows
+    ///
+    /// Indirectly mutably borrows the destination window's storage slot.
     pub fn create_root_window(&self, attrs: WindowAttributes) -> AResult<WindowIdOwned> {
         let ael = self.active_event_loop().ok_or_else(|| {
             anyhow::anyhow!("no active event loop; create windows from within the main loop")
@@ -339,7 +367,8 @@ impl World {
             .create_window(attrs)
             .map_err(|e| anyhow::anyhow!("failed to create window: {e}"))?;
 
-        Ok(self.insert_window(self.create_level(), move |id, level| {
+        Ok(self.insert_window(self.create_level(), move |id, level, self_| {
+            self_.get_level(level).expect("level just created").set_window(id);
             Box::new(RootWindow::new(
                 id,
                 level,
@@ -349,10 +378,15 @@ impl World {
         }))
     }
 
+    /// Inserts a built window into the [`World`].
+    ///
+    /// # Borrows
+    ///
+    /// Mutably borrows the destination window's storage slot.
     fn insert_window(
         &self,
         level: LevelIndexOwned,
-        build: impl FnOnce(WindowId, LevelIndex) -> Box<dyn IWindowBoth>,
+        build: impl FnOnce(WindowId, LevelIndex, &Self) -> Box<dyn IWindowBoth>,
     ) -> WindowIdOwned {
         let handle = level.handle();
 
@@ -361,7 +395,7 @@ impl World {
             let g = storage.0;
             let WindowStorage::Vacant(next) = std::mem::replace(
                 &mut storage.1,
-                WindowStorage::Occupied(level, build(WindowId(head as u32, g), handle)),
+                WindowStorage::Occupied(level, build(WindowId(head as u32, g), handle, self)),
             ) else {
                 unreachable!("free head should point to a vacant slot")
             };
@@ -380,7 +414,7 @@ impl World {
                 panic!("too many windows allocated");
             }
 
-            let window = build(WindowId(i, 0), handle);
+            let window = build(WindowId(i, 0), handle, self);
             self.windows
                 .push(RefCell::new((0, WindowStorage::Occupied(level, window))));
             WindowIdOwned(i, 0)
@@ -388,6 +422,11 @@ impl World {
     }
 
     /// Returns an [`IWindow`] by its ID.
+    ///
+    /// # Borrows
+    ///
+    /// Immutably borrows the window's storage slot until the returned
+    /// [`Ref`] is dropped.
     pub fn get_window(&self, id: WindowId) -> Option<Ref<'_, dyn IWindow>> {
         Ref::filter_map(
             self.windows.get(id.0 as usize)?.borrow(),
@@ -405,6 +444,11 @@ impl World {
     }
 
     /// Returns an [`IWindow`] by its ID, mutably.
+    ///
+    /// # Borrows
+    ///
+    /// Mutably borrows the window's storage slot until the returned
+    /// [`RefMut`] is dropped.
     pub fn get_window_mut(&self, id: WindowId) -> Option<RefMut<'_, dyn IWindow>> {
         RefMut::filter_map(
             self.windows.get(id.0 as usize)?.borrow_mut(),
@@ -421,6 +465,12 @@ impl World {
         .ok()
     }
 
+    /// Returns an [`IWindowBoth`] by its ID, mutably.
+    ///
+    /// # Borrows
+    ///
+    /// Mutably borrows the window's storage slot until the returned
+    /// [`RefMut`] is dropped.
     pub(crate) fn get_window_mut_int(&self, id: WindowId) -> Option<RefMut<'_, dyn IWindowBoth>> {
         RefMut::filter_map(self.windows.get(id.0 as usize)?.borrow_mut(), |s| {
             if let WindowStorage::Occupied(_, window) = &mut s.1
@@ -435,6 +485,10 @@ impl World {
     }
 
     /// Returns the [`WindowId`] of the window backed by the given OS window.
+    ///
+    /// # Borrows
+    ///
+    /// Transiently immutably borrows every window's storage slot.
     pub fn window_by_os_id(&self, os_id: winit::window::WindowId) -> Option<WindowId> {
         self.windows.iter().find_map(|(pidx, storage)| {
             let s = storage.borrow();
@@ -448,6 +502,12 @@ impl World {
         })
     }
 
+    /// Forwards a window event to the window it belongs to.
+    ///
+    /// # Borrows
+    ///
+    /// Mutably borrows the target window's storage slot while handling the
+    /// event.
     pub(crate) fn handle_window_event(&self, id: WindowId, event: &WindowEvent) {
         let Some(mut window) = self.get_window_mut_int(id) else {
             return;
@@ -456,6 +516,11 @@ impl World {
     }
 
     /// Returns an immutable iterator over every [`IWindow`].
+    ///
+    /// # Borrows
+    ///
+    /// Each yielded [`Ref`] immutably borrows its window's
+    /// storage slot until dropped.
     pub fn iter_windows(&self) -> impl Iterator<Item = Ref<'_, dyn IWindow>> {
         self.windows.iter().filter_map(|(_, storage)| {
             Ref::filter_map(storage.borrow(), |s| -> Option<&dyn IWindow> {
@@ -470,6 +535,11 @@ impl World {
     }
 
     /// Returns a mutable iterator over every [`IWindow`].
+    ///
+    /// # Borrows
+    ///
+    /// Each yielded [`RefMut`] mutably borrows its window's
+    /// storage slot until dropped.
     pub fn iter_windows_mut(&self) -> impl Iterator<Item = RefMut<'_, dyn IWindow>> {
         self.windows.iter().filter_map(|(_, storage)| {
             RefMut::filter_map(storage.borrow_mut(), |s| -> Option<&mut dyn IWindow> {
@@ -483,6 +553,12 @@ impl World {
         })
     }
 
+    /// Returns a mutable iterator over every window, as [`IWindowBoth`].
+    ///
+    /// # Borrows
+    ///
+    /// Each yielded [`RefMut`] mutably borrows its window's
+    /// storage slot until dropped.
     pub(crate) fn iter_windows_mut_int(&self) -> impl Iterator<Item = RefMut<'_, dyn IWindowBoth>> {
         self.windows.iter().filter_map(|(_, storage)| {
             RefMut::filter_map(storage.borrow_mut(), |s| {
@@ -497,6 +573,10 @@ impl World {
     }
 
     /// Returns an iterator over every [`WindowId`].
+    ///
+    /// # Borrows
+    ///
+    /// Transiently immutably borrows each window's storage slot.
     pub fn iter_window_ids(&self) -> impl Iterator<Item = WindowId> {
         self.windows.iter().filter_map(|(pidx, storage)| {
             let s = storage.borrow();
