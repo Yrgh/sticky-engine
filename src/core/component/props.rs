@@ -1,6 +1,6 @@
 //! Inherit properties of Components, mainly [`IComponent`]
 
-use crate::core::{ComponentGetError, ComponentGetMutError, level::LevelIndex, world::world};
+use crate::core::{ComponentGetError, ComponentGetMutError, level::LevelIndex, world::World};
 
 use super::*;
 
@@ -94,7 +94,7 @@ pub unsafe trait IComponent: Any {
     ///
     /// You should not try to access any ancestors or children during this
     /// function. Save it for [`post_init`](IComponent::post_init).
-    fn spawn(parent: ComponentParent, info: Self::SpawnInfo) -> ComponentId<Self>
+    fn spawn(world: &World, parent: ComponentParent, info: Self::SpawnInfo) -> ComponentId<Self>
     where
         Self: Sized;
 
@@ -108,14 +108,14 @@ pub unsafe trait IComponent: Any {
     ///
     /// # Borrows
     /// Mutably borrows all descendants of self, but only one at a time.
-    fn post_init(&mut self) {
+    fn post_init(&mut self, world: &World) {
         self.post_init_hook();
 
         let mut stack: Vec<_> = self.children().collect();
         stack.reverse();
 
         while let Some(comp) = stack.pop() {
-            let mut comp = match comp.get_mut() {
+            let mut comp = match comp.get_mut(world) {
                 Ok(comp) => comp,
                 Err(ComponentGetMutError::NotFound) => continue,
                 Err(ComponentGetMutError::BorrowMutError(e)) => {
@@ -146,7 +146,7 @@ pub unsafe trait IComponent: Any {
     ///
     /// # Borrows
     /// Mutably borrows all descendants of self, but only one at a time.
-    fn destroy(&mut self) {
+    fn destroy(&mut self, world: &World) {
         self.destroy_hook();
 
         let mut stack: Vec<_> = self.children().collect();
@@ -154,7 +154,7 @@ pub unsafe trait IComponent: Any {
 
         while let Some(id) = stack.pop() {
             let mut children = {
-                let mut comp = match id.get_mut() {
+                let mut comp = match id.get_mut(world) {
                     Ok(comp) => comp,
                     Err(ComponentGetMutError::NotFound) => continue,
                     Err(ComponentGetMutError::BorrowMutError(e)) => {
@@ -171,7 +171,7 @@ pub unsafe trait IComponent: Any {
 
             let (pidx, gidx, tyid) = id.acquire_parts();
 
-            if let Some(level) = world().get_level(id.level_id()) {
+            if let Some(level) = world.get_level(id.level_id()) {
                 level.remove_component_internal(tyid, pidx, gidx);
             }
 
@@ -189,13 +189,13 @@ pub unsafe trait IComponent: Any {
     ///
     /// # Borrows
     /// Mutably borrows all descendants of self, but only one at a time.
-    fn pre_phys(&mut self, delta: f32) {
+    fn pre_phys(&mut self, world: &World, delta: f32) {
         self.pre_phys_hook(delta);
         let mut stack: Vec<_> = self.children().collect();
         stack.reverse();
 
         while let Some(comp) = stack.pop() {
-            let mut comp = match comp.get_mut() {
+            let mut comp = match comp.get_mut(world) {
                 Ok(comp) => comp,
                 Err(ComponentGetMutError::NotFound) => continue,
                 Err(ComponentGetMutError::BorrowMutError(e)) => {
@@ -221,14 +221,14 @@ pub unsafe trait IComponent: Any {
     ///
     /// # Borrows
     /// Mutably borrows all descendants of self, but only one at a time.
-    fn post_phys(&mut self, delta: f32) {
+    fn post_phys(&mut self, world: &World, delta: f32) {
         self.post_phys_hook(delta);
         let mut stack: Vec<_> = self.children().map(|c| (c, false)).collect();
         stack.reverse();
 
         while let Some((comp, visited)) = stack.pop() {
             if visited {
-                let mut comp = match comp.get_mut() {
+                let mut comp = match comp.get_mut(world) {
                     Ok(comp) => comp,
                     Err(ComponentGetMutError::NotFound) => continue,
                     Err(ComponentGetMutError::BorrowMutError(e)) => {
@@ -240,7 +240,7 @@ pub unsafe trait IComponent: Any {
             } else {
                 stack.push((comp.clone(), true));
 
-                let comp = match comp.get() {
+                let comp = match comp.get(world) {
                     Ok(comp) => comp,
                     Err(ComponentGetError::NotFound) => continue,
                     Err(ComponentGetError::BorrowError(e)) => panic!("post_phys borrow error: {e}"),
@@ -263,13 +263,13 @@ pub unsafe trait IComponent: Any {
     ///
     /// # Borrows
     /// Mutably borrows all descendants of self, but only one at a time.
-    fn idle(&mut self, delta: f32) {
+    fn idle(&mut self, world: &World, delta: f32) {
         self.idle_hook(delta);
         let mut stack: Vec<_> = self.children().collect();
         stack.reverse();
 
         while let Some(comp) = stack.pop() {
-            let mut comp = match comp.get_mut() {
+            let mut comp = match comp.get_mut(world) {
                 Ok(comp) => comp,
                 Err(ComponentGetMutError::NotFound) => continue,
                 Err(ComponentGetMutError::BorrowMutError(e)) => {

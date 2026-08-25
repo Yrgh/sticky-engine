@@ -1,4 +1,4 @@
-use sticky_engine::{core::world::world, prelude::*};
+use sticky_engine::prelude::*;
 
 comp_def! {
     (in sticky_engine)
@@ -12,6 +12,7 @@ comp_def! {
         behaviors {
             #[init]
             fn init(
+                _world: &World,
                 parent: ComponentParent,
                 _self_id: ComponentId<Self>,
                 _: u32
@@ -50,11 +51,12 @@ comp_def! {
         behaviors {
             #[init]
             fn init(
+                world: &World,
                 parent: ComponentParent,
                 self_id: ComponentId<Self>,
                 _: ()
             ) -> CTopInit {
-                let kid = || CRel::spawn(self_id.clone().into(), 0);
+                let kid = || CRel::spawn(world, self_id.clone().into(), 0);
                 CTopInit {
                     trans: Trans3ProviderTop::new(&parent),
                     rel: kid(),
@@ -81,10 +83,10 @@ impl STrans3 for CTop {
 fn main() {
     unsafe {
         run_main_loop(
-            || {
+            |world| {
                 log!(dbg: "main loop started");
-                let main_level = world().main_level().expect("main level");
-                main_level.spawn_top_level::<CTop>(());
+                let main_level = world.main_level().expect("main level");
+                main_level.spawn_top_level::<CTop>(world, ());
             },
             false,
         )

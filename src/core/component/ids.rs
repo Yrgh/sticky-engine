@@ -7,10 +7,7 @@ use std::{
 };
 
 use crate::core::{
-    ComponentGetError, ComponentGetMutError,
-    level::{Level, LevelIndex},
-    relations::RELATIONS,
-    world::world,
+    ComponentGetError, ComponentGetMutError, level::{Level, LevelIndex}, relations::RELATIONS, world::World,
 };
 
 use super::*;
@@ -58,7 +55,7 @@ pub unsafe trait ISlotId: Any + std::hash::Hash + PartialEq + Eq + Clone {
     ///
     /// Immutably borrows the referenced Component's slot until the returned
     /// [`Ref`] is dropped.
-    fn get<'a>(&'a self) -> Result<Ref<'a, Self::TraitObject>, ComponentGetError>;
+    fn get<'w>(&self, world: &'w World) -> Result<Ref<'w, Self::TraitObject>, ComponentGetError>;
 
     /// Try to access this ID mutably.
     ///
@@ -68,13 +65,13 @@ pub unsafe trait ISlotId: Any + std::hash::Hash + PartialEq + Eq + Clone {
     ///
     /// Mutably borrows the referenced Component's slot until the returned
     /// [`RefMut`] is dropped.
-    fn get_mut<'a>(&'a self) -> Result<RefMut<'a, Self::TraitObject>, ComponentGetMutError>;
+    fn get_mut<'w>(&self, world: &'w World) -> Result<RefMut<'w, Self::TraitObject>, ComponentGetMutError>;
 
     /// Returns the [`Level`] of the Component this ID references.
     ///
     /// This is implemented automatically. Don't override it.
-    fn get_level(&self) -> Option<&Level> {
-        world().get_level(self.level_id())
+    fn get_level<'w>(&self, world: &'w World) -> Option<&'w Level> {
+        world.get_level(self.level_id())
     }
 
     /// Attempts to cast this ID to another ID.
@@ -179,15 +176,15 @@ unsafe impl<C: IComponent> ISlotId for ComponentId<C> {
         (self.pidx, self.gidx, TypeId::of::<C>())
     }
 
-    fn get<'a>(&'a self) -> Result<Ref<'a, Self::TraitObject>, ComponentGetError> {
-        world()
+    fn get<'w>(&self, world: &'w World) -> Result<Ref<'w, Self::TraitObject>, ComponentGetError> {
+        world
             .get_level(self.lidx)
             .ok_or(ComponentGetError::NotFound)?
             .acquire_component_internal(self.pidx, self.gidx)
     }
 
-    fn get_mut<'a>(&'a self) -> Result<RefMut<'a, Self::TraitObject>, ComponentGetMutError> {
-        world()
+    fn get_mut<'w>(&self, world: &'w World) -> Result<RefMut<'w, Self::TraitObject>, ComponentGetMutError> {
+        world
             .get_level(self.lidx)
             .ok_or(ComponentGetMutError::NotFound)?
             .acquire_component_internal_mut(self.pidx, self.gidx)
@@ -251,15 +248,15 @@ unsafe impl ISlotId for DynComponentId {
         (self.pidx, self.gidx, self.tyid)
     }
 
-    fn get<'a>(&'a self) -> Result<Ref<'a, dyn IComponent>, ComponentGetError> {
-        world()
+    fn get<'w>(&self, world: &'w World) -> Result<Ref<'w, dyn IComponent>, ComponentGetError> {
+        world
             .get_level(self.lidx)
             .ok_or(ComponentGetError::NotFound)?
             .acquire_component_internal_dyn(self.tyid, self.pidx, self.gidx)
     }
 
-    fn get_mut<'a>(&'a self) -> Result<RefMut<'a, dyn IComponent>, ComponentGetMutError> {
-        world()
+    fn get_mut<'w>(&self, world: &'w World) -> Result<RefMut<'w, dyn IComponent>, ComponentGetMutError> {
+        world
             .get_level(self.lidx)
             .ok_or(ComponentGetMutError::NotFound)?
             .acquire_component_internal_dyn_mut(self.tyid, self.pidx, self.gidx)

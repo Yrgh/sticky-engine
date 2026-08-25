@@ -4,7 +4,7 @@
 //! non-blocking interior mutability, meaning the [`World`] cannot be shared across threads. The
 //! [`World`] contains all [`Level`]s, [`IWindow`]s, and Components.
 use std::{
-    cell::{Cell, OnceCell, Ref, RefCell, RefMut},
+    cell::{Cell, OnceCell, Ref, RefCell, RefMut, UnsafeCell},
     collections::VecDeque,
     sync::Arc,
     time::Duration,
@@ -36,28 +36,78 @@ enum WindowStorage {
     Vacant(Option<usize>),
 }
 
-thread_local! {
-    pub(crate) static WORLD_PTR: Cell<*const World> = const { Cell::new(std::ptr::null()) };
+#[cfg(test)]
+#[derive(Clone, Copy)]
+enum WorldStorage {
+    Active(&'static World),
+    Inactive(&'static World),
+    NotCreated,
 }
 
-/// Retrieves the World instance.
-///
-/// Calling this
-///
-/// # Panics
-/// If outside the main thread, or outside the main loop.
-pub fn world() -> &'static World {
-    let ptr = WORLD_PTR.get();
-    if ptr.is_null() {
-        panic!("called `world()` either from outside the main thread or outside of the main loop")
-    } else {
-        unsafe { &*ptr }
+#[cfg(test)]
+thread_local! {
+    pub(crate) static WORLD_PTR: Cell<WorldStorage> = const { Cell::new(WorldStorage::NotCreated) };
+}
+
+pub(crate) fn new_world(headless: bool) -> World {
+    let world = World::new_empty();
+    if headless {
+        world.make_headless();
     }
+    world
+}
+
+#[cfg(test)]
+pub(crate) fn new_world_test(headless: bool) -> &'static World {
+    match WORLD_PTR.get() {
+        WorldStorage::Active(_) => {
+            panic!("creating new world while one is already active on this thread")
+        }
+        WorldStorage::Inactive(w) => {
+            if headless {
+                w.make_headless();
+            }
+
+            WORLD_PTR.set(WorldStorage::Active(w));
+            w
+        }
+        WorldStorage::NotCreated => {
+            let world = World::new_empty();
+            if headless {
+                world.make_headless();
+            }
+            let world: &'static World = Box::leak(Box::new(world));
+
+            WORLD_PTR.set(WorldStorage::Active(world));
+            world
+        }
+    }
+}
+
+#[cfg(test)]
+pub(crate) struct DropWorldPtr {}
+
+#[cfg(test)]
+impl Drop for DropWorldPtr {
+    fn drop(&mut self) {
+        if let WorldStorage::Active(w) = WORLD_PTR.get() {
+            WORLD_PTR.set(WorldStorage::Inactive(w));
+            w.clear();
+        }
+    }
+}
+
+#[cfg(test)]
+/// Runs a
+pub fn run_test<F: FnOnce() -> R, R>(f: F) -> R {
+    let _ = new_world_test(true);
+    let _world_guard = DropWorldPtr {};
+    f()
 }
 
 /// The entire context of the engine, including Components.
 pub struct World {
-    levels: Box<boxcar::Vec<(u32, LevelStorage)>>,
+    levels: Box<boxcar::Vec<UnsafeCell<(u32, LevelStorage)>>>,
     level_free_head: Cell<Option<usize>>,
 
     action_queue: RefCell<VecDeque<WorldAction>>,
@@ -71,37 +121,12 @@ pub struct World {
     main_window: Cell<Option<WindowId>>,
     main_level: Cell<Option<LevelIndex>>,
 
-    active_event_loop: *const ActiveEventLoop,
+    active_event_loop: Cell<*const ActiveEventLoop>,
 
     vk_ctx: OnceCell<Arc<VkContext>>,
 }
 
 impl World {
-    pub(crate) fn new_headless() -> Self {
-        Self {
-            levels: Box::new(boxcar::vec![(
-                0,
-                LevelStorage::Occupied(Level::new(LevelIndex(0, 0)))
-            )]),
-            level_free_head: Cell::new(None),
-
-            action_queue: RefCell::new(VecDeque::new()),
-
-            stable_rate: Cell::new(Duration::from_millis(15)),
-            min_idle_delay: Cell::new(Duration::from_millis(5)),
-
-            windows: Box::new(boxcar::Vec::new()),
-
-            window_free_head: Cell::new(None),
-            main_window: Cell::new(None),
-            main_level: Cell::new(Some(LevelIndex(0, 0))),
-
-            active_event_loop: std::ptr::null(),
-
-            vk_ctx: OnceCell::new(),
-        }
-    }
-
     pub(crate) fn new_empty() -> Self {
         Self {
             levels: Box::new(boxcar::Vec::new()),
@@ -113,15 +138,56 @@ impl World {
             min_idle_delay: Cell::new(Duration::from_millis(15)),
 
             windows: Box::new(boxcar::Vec::new()),
-
             window_free_head: Cell::new(None),
             main_window: Cell::new(None),
             main_level: Cell::new(None),
 
-            active_event_loop: std::ptr::null(),
+            active_event_loop: Cell::new(std::ptr::null()),
 
             vk_ctx: OnceCell::new(),
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn clear(&self) {
+        // Reset levels
+        for (i, level) in self.levels.iter() {
+            let s = unsafe { level.get().as_mut_unchecked() };
+            s.0 = 0;
+            s.1 = LevelStorage::Vacant((i != self.levels.count() - 1).then_some(i + 1));
+        }
+        self.level_free_head
+            .set((!self.levels.is_empty()).then_some(0));
+
+        self.action_queue.borrow_mut().clear();
+
+        self.stable_rate.set(Duration::ZERO);
+        self.min_idle_delay.set(Duration::ZERO);
+
+        // Reset windows
+        for (i, w) in self.windows.iter() {
+            let mut s = w.borrow_mut();
+            s.0 = 0;
+            s.1 = WindowStorage::Vacant((i != self.windows.count() - 1).then_some(i + 1));
+        }
+        self.window_free_head
+            .set((!self.windows.is_empty()).then_some(0));
+
+        self.main_window.take();
+        self.main_level.take();
+
+        self.active_event_loop.take();
+    }
+
+    pub(crate) fn make_headless(&self) {
+        let lidxo = self.create_level();
+        let lidx = lidxo.handle();
+        lidxo.leak();
+
+        self.main_level.set(Some(lidx));
+
+        self.stable_rate.set(Duration::from_millis(15));
+        self.min_idle_delay.set(Duration::from_millis(15));
     }
 }
 
@@ -172,11 +238,11 @@ impl World {
 
     /// Processes all queued level/window deletions.
     ///
-    /// # Borrows
+    /// # Safety
     ///
-    /// Mutably borrows the storage slot of each destroyed window.
-    pub(crate) fn flush_actions(&mut self) {
-        while let Some(action) = self.action_queue.get_mut().pop_front() {
+    /// Must be called when nothing else is using the [`World`].
+    pub(crate) unsafe fn flush_actions(&self) {
+        while let Some(action) = self.action_queue.borrow_mut().pop_front() {
             match action {
                 WorldAction::DeleteLevel(level) => {
                     // # Safety
@@ -190,8 +256,10 @@ impl World {
                             .as_mut_unchecked()
                     };
 
+                    let s = unsafe { s.get().as_mut_unchecked() };
+
                     if let LevelStorage::Occupied(level) = &s.1 {
-                        level.destroy_internal()
+                        level.destroy_internal(self)
                     }
 
                     s.0 = s.0.wrapping_add(1);
@@ -239,19 +307,19 @@ impl World {
         }
     }
 
-    pub(crate) unsafe fn set_active_event_loop(&mut self, ael: &ActiveEventLoop) {
-        self.active_event_loop = ael;
+    pub(crate) unsafe fn set_active_event_loop(&self, ael: &ActiveEventLoop) {
+        self.active_event_loop.set(ael);
     }
 
-    pub(crate) fn unset_active_event_loop(&mut self) {
-        self.active_event_loop = std::ptr::null();
+    pub(crate) fn unset_active_event_loop(&self) {
+        self.active_event_loop.take();
     }
 
     fn active_event_loop(&self) -> Option<&ActiveEventLoop> {
-        if self.active_event_loop.is_null() {
+        if self.active_event_loop.get().is_null() {
             None
         } else {
-            Some(unsafe { self.active_event_loop.as_ref_unchecked() })
+            Some(unsafe { self.active_event_loop.get().as_ref_unchecked() })
         }
     }
 }
@@ -301,6 +369,8 @@ impl World {
                     .cast_mut()
                     .as_mut_unchecked()
             };
+            let s = unsafe { s.get().as_mut_unchecked() };
+
             let g = s.0;
             let LevelStorage::Vacant(new_head) = std::mem::replace(
                 &mut s.1,
@@ -313,15 +383,17 @@ impl World {
 
             LevelIndexOwned(head as u32, s.0)
         } else {
-            self.levels
-                .push((0, LevelStorage::Occupied(Level::new(LevelIndex(i, 0)))));
+            self.levels.push(UnsafeCell::new((
+                0,
+                LevelStorage::Occupied(Level::new(LevelIndex(i, 0))),
+            )));
             LevelIndexOwned(i, 0)
         }
     }
 
     /// Returns a reference to a [`Level`].
     pub fn get_level(&self, level: LevelIndex) -> Option<&Level> {
-        let (g, s) = self.levels.get(level.0 as usize)?;
+        let (g, s) = unsafe { self.levels.get(level.0 as usize)?.get().as_ref_unchecked() };
         if *g == level.1
             && let LevelStorage::Occupied(l) = s
         {
@@ -340,7 +412,8 @@ impl World {
 
     /// Returns an iterator over every level
     pub fn iter_levels(&self) -> impl Iterator<Item = &Level> {
-        self.levels.iter().filter_map(|(_, (_, l))| {
+        self.levels.iter().filter_map(|(_, s)| {
+            let (_, l) = unsafe { s.get().as_ref_unchecked() };
             if let LevelStorage::Occupied(l) = &l {
                 Some(l)
             } else {
@@ -367,15 +440,20 @@ impl World {
             .create_window(attrs)
             .map_err(|e| anyhow::anyhow!("failed to create window: {e}"))?;
 
-        Ok(self.insert_window(self.create_level(), move |id, level, self_| {
-            self_.get_level(level).expect("level just created").set_window(id);
-            Box::new(RootWindow::new(
-                id,
-                level,
-                window,
-                self.get_vk().expect("need Vulkan to create a window"),
-            ))
-        }))
+        Ok(
+            self.insert_window(self.create_level(), move |id, level, self_| {
+                self_
+                    .get_level(level)
+                    .expect("level just created")
+                    .set_window(id);
+                Box::new(RootWindow::new(
+                    id,
+                    level,
+                    window,
+                    self.get_vk().expect("need Vulkan to create a window"),
+                ))
+            }),
+        )
     }
 
     /// Inserts a built window into the [`World`].

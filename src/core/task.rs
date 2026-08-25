@@ -14,7 +14,8 @@ use std::any::Any;
 use tokio::sync::oneshot;
 
 use crate::core::{
-    main_loop::{MAIN_QUEUE, MainJob, RT_HANDLE},
+    main_loop::{Abstract, MAIN_QUEUE, MainJob, RT_HANDLE},
+    world::World,
 };
 
 /// Runs a closure on the main thread with access to the [`World`](crate::core::world::World).
@@ -26,13 +27,16 @@ use crate::core::{
 ///
 /// # Panics
 /// If the function is called outside of the main loop.
-pub async fn join_main<T: Any + Send + Sync, F: FnOnce() -> T + Send + Sync + 'static>(
+pub async fn join_main<T: Any + Send + Sync, F: FnOnce(&World) -> T + Send + Sync + 'static>(
     f: F,
 ) -> T {
     let mq = MAIN_QUEUE.get().expect("main loop not initialized yet");
     let (tx, rx) = oneshot::channel();
     mq.send(MainJob::Exec {
-        work: Box::new(|| Box::new(f())),
+        work: {
+            let mut f = Some(f);
+            Box::new(move |world| Box::new(f.take().expect("join_main closure called more than once")(world)) as Abstract)
+        },
         send: tx,
     })
     .await

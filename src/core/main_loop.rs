@@ -29,17 +29,17 @@ use crate::{
     core::{
         component::ISlotId,
         level::LevelIndex,
-        world::{WORLD_PTR, World},
+        world::{World, new_world},
     },
     log,
 };
 
-type Abstract = Box<dyn Any + Send + Sync>;
-type InitFn = Box<dyn FnOnce() + 'static>;
+pub(crate) type Abstract = Box<dyn Any + Send + Sync>;
+type InitFn = Box<dyn FnOnce(&World) + 'static>;
 
 pub(crate) enum MainJob {
     Exec {
-        work: Box<dyn FnOnce() -> Abstract + Send + Sync + 'static>,
+        work: Box<dyn FnMut(&World) -> Abstract + Send + 'static>,
         send: oneshot::Sender<Abstract>,
     },
     Quit,
@@ -75,11 +75,11 @@ impl MainLoop {
             };
 
             match job {
-                MainJob::Exec { work, send } => {
+                MainJob::Exec { mut work, send } => {
                     // No work if future is dropped.
                     if !send.is_closed() {
                         // Fails if the future is dropped while work is processing.
-                        let _ = send.send(work());
+                        let _ = send.send(work(&self.world));
                     }
                 }
                 MainJob::Quit => return true,
@@ -243,7 +243,7 @@ impl ApplicationHandler for MainLoop {
             }
 
             if let Some(init) = self.init_fn.take() {
-                init();
+                init(&self.world);
             }
         }
 
@@ -300,14 +300,14 @@ impl ApplicationHandler for MainLoop {
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         unsafe { self.world.set_active_event_loop(event_loop) };
 
-        self.world.flush_actions();
+        unsafe { self.world.flush_actions() };
 
         let mut iters = 0;
         while iters < STABLE_SPIRAL_LIMIT && Instant::now() > self.stable_accumulator {
             for level in self.world.iter_levels() {
                 for id in level.iter_top_level() {
-                    let mut comp = id.get_mut().expect("component was just acquired");
-                    comp.pre_phys(self.world.get_stable_tick_rate().as_secs_f32());
+                    let mut comp = id.get_mut(&self.world).expect("component was just acquired");
+                    comp.pre_phys(&self.world, self.world.get_stable_tick_rate().as_secs_f32());
                 }
             }
 
@@ -315,8 +315,8 @@ impl ApplicationHandler for MainLoop {
 
             for level in self.world.iter_levels() {
                 for id in level.iter_top_level() {
-                    let mut comp = id.get_mut().expect("component was just acquired");
-                    comp.post_phys(self.world.get_stable_tick_rate().as_secs_f32());
+                    let mut comp = id.get_mut(&self.world).expect("component was just acquired");
+                    comp.post_phys(&self.world, self.world.get_stable_tick_rate().as_secs_f32());
                 }
             }
 
@@ -336,7 +336,7 @@ impl ApplicationHandler for MainLoop {
 
             for level in self.world.iter_levels() {
                 for id in level.iter_top_level() {
-                    id.get_mut().expect("just acquired").idle(delta);
+                    id.get_mut(&self.world).expect("just acquired").idle(&self.world, delta);
                 }
             }
 
@@ -395,19 +395,22 @@ const MAIN_QUEUE_LEN: usize = 16;
 ///
 /// # Safety
 ///
-/// This function must be called exactly once on the main thread. The main loop provides a [`tokio`]
-/// runtime, so do not use `#[tokio::main]`.
-pub unsafe fn run_main_loop(init_fn: impl FnOnce() + 'static, headless: bool) -> AResult<()> {
+/// This function must be called exactly once on the main thread. The main loop
+/// provides a [`tokio`] runtime, so do not use `#[tokio::main]`.
+pub unsafe fn run_main_loop(init_fn: impl FnOnce(&World) + 'static, headless: bool) -> AResult<()> {
+    if cfg!(test) {
+        panic!("Cannot run the main loop during a test. Write an example");
+    }
+
     let (job_tx, job_rx) = mpsc::channel(MAIN_QUEUE_LEN);
+
+    let world = new_world(headless);
+
     let mut main_loop = MainLoop {
         tokio_rt: tokio::runtime::Runtime::new()?,
         jobs: job_rx,
 
-        world: if headless {
-            World::new_headless()
-        } else {
-            World::new_empty()
-        },
+        world,
 
         init_fn: Some(Box::new(init_fn)),
         headless,
@@ -416,8 +419,6 @@ pub unsafe fn run_main_loop(init_fn: impl FnOnce() + 'static, headless: bool) ->
 
         last_idle_time: Instant::now(),
     };
-
-    WORLD_PTR.set(&main_loop.world);
 
     RT_HANDLE
         .set(main_loop.tokio_rt.handle().clone())
@@ -430,8 +431,6 @@ pub unsafe fn run_main_loop(init_fn: impl FnOnce() + 'static, headless: bool) ->
     let event_loop = EventLoop::new()?;
     event_loop.set_control_flow(winit::event_loop::ControlFlow::Poll);
     event_loop.run_app(&mut main_loop)?;
-
-    WORLD_PTR.set(std::ptr::null());
 
     Ok(())
 }

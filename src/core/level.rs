@@ -18,6 +18,7 @@ use crate::{
         relations::{BuildTypeIdHasher, RELATIONS},
         renderer::RenderingQueue,
         window::WindowId,
+        world::World,
     },
     log,
 };
@@ -74,7 +75,7 @@ impl<C: IComponent> IColumn for Column<C> {
         if storage.0 == gidx {
             storage.0 = gidx.wrapping_add(1);
             storage.1 = SlotValue::Vacant(self.free_head.get());
-            self.free_head.set(Some(gidx));
+            self.free_head.set(Some(pidx));
             self.len.set(self.len.get() - 1);
         }
     }
@@ -331,10 +332,6 @@ impl Level {
             return;
         };
 
-        if pidx >= column.len() {
-            return;
-        }
-
         let Some(column) = <dyn Any>::downcast_ref::<Column<C>>(column) else {
             return;
         };
@@ -374,10 +371,6 @@ impl Level {
             .get(&TypeId::of::<C>())
             .ok_or(ComponentGetError::NotFound)?;
 
-        if pidx >= column.len() {
-            Err(ComponentGetError::NotFound)?;
-        }
-
         let column =
             <dyn Any>::downcast_ref::<Column<C>>(column).ok_or(ComponentGetError::NotFound)?;
 
@@ -416,10 +409,6 @@ impl Level {
             .component_columns
             .get(&TypeId::of::<C>())
             .ok_or(ComponentGetMutError::NotFound)?;
-
-        if pidx >= column.len() {
-            Err(ComponentGetMutError::NotFound)?;
-        }
 
         let column =
             <dyn Any>::downcast_ref::<Column<C>>(column).ok_or(ComponentGetMutError::NotFound)?;
@@ -498,11 +487,11 @@ impl Level {
     ///
     /// # Borrows
     /// Mutably borrows all Components and descendants.
-    pub fn destroy_internal(&self) {
+    pub fn destroy_internal(&self, world: &World) {
         for top_id in self.top_level.borrow_mut().drain(..) {
             let (top_pidx, top_gidx, top_tyid) = top_id.acquire_parts();
-            let mut top = top_id.get_mut().expect("just acquired from top");
-            top.destroy();
+            let mut top = top_id.get_mut(world).expect("just acquired from top");
+            top.destroy(world);
             drop(top);
 
             self.remove_component_internal(top_tyid, top_pidx, top_gidx);
@@ -510,10 +499,10 @@ impl Level {
     }
 
     /// Spawn a new Component at the end of the top level list.
-    pub fn spawn_top_level<C: IComponent>(&self, info: C::SpawnInfo) -> ComponentId<C> {
-        let id = C::spawn(self.id().into(), info);
+    pub fn spawn_top_level<C: IComponent>(&self, world: &World, info: C::SpawnInfo) -> ComponentId<C> {
+        let id = C::spawn(world, self.id().into(), info);
         self.top_level.borrow_mut().push(id.clone().into());
-        id.get_mut().expect("component was just added").post_init();
+        id.get_mut(world).expect("component was just added").post_init(world);
         id
     }
 
@@ -534,9 +523,9 @@ impl Level {
     /// Mutably borrows the removed Component's slot, and the removed Component
     /// plus all of its descendants (via queue-based traversal) through
     /// [`destroy`](IComponent::destroy).
-    pub fn remove_top_level(&self, position: usize) {
+    pub fn remove_top_level(&self, world: &World, position: usize) {
         let id = self.top_level.borrow_mut().remove(position);
-        id.get_mut().expect("id is in world").destroy();
+        id.get_mut(world).expect("id is in world").destroy(world);
         let (pidx, gidx, tyid) = id.acquire_parts();
         self.remove_component_internal(tyid, pidx, gidx);
     }

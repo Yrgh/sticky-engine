@@ -6,5 +6,6 @@ pub use super::core::{
     level::LevelIndex,
     main_loop::{run_main_loop, queue_quit},
     task::{join_main, spawn},
+    world::World,
 };
 pub use super::{comp_def, slot_def, slot_impl, log};

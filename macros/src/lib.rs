@@ -132,6 +132,7 @@ pub fn slot_def(attr: TokenStream1, input: TokenStream1) -> TokenStream1 {
         mod #module_name {
             use super::*;
             use #engine_crate::core::component::*;
+            use #engine_crate::core::world::World;
 
             #[doc = #id_doc]
             #visibility1 struct #slot_id_name {
@@ -201,22 +202,24 @@ pub fn slot_def(attr: TokenStream1, input: TokenStream1) -> TokenStream1 {
                     (self.pidx, self.gidx, self.tyid)
                 }
 
-                fn get<'a>(&'a self)
-                    -> Result<::std::cell::Ref<'a, Self::TraitObject>, #engine_crate::core::ComponentGetError>
+                fn get<'w>(&self, world: &'w #engine_crate::core::world::World)
+                    -> Result<::std::cell::Ref<'w, Self::TraitObject>, #engine_crate::core::ComponentGetError>
                 {
                     Ok((self.conv.comp_to_t_ref)(
-                        #engine_crate::core::world::world()
-                            .get_level(self.lidx).ok_or(#engine_crate::core::ComponentGetError::NotFound)?
+                        world
+                            .get_level(self.lidx)
+                            .ok_or(#engine_crate::core::ComponentGetError::NotFound)?
                             .acquire_component_internal_dyn(self.tyid, self.pidx, self.gidx)?
                     ))
                 }
 
-                fn get_mut<'a>(&'a self)
-                    -> Result<::std::cell::RefMut<'a, Self::TraitObject>, #engine_crate::core::ComponentGetMutError>
+                fn get_mut<'w>(&self, world: &'w #engine_crate::core::world::World)
+                    -> Result<::std::cell::RefMut<'w, Self::TraitObject>, #engine_crate::core::ComponentGetMutError>
                 {
                     Ok((self.conv.comp_to_t_mut)(
-                        #engine_crate::core::world::world()
-                            .get_level(self.lidx).ok_or(#engine_crate::core::ComponentGetMutError::NotFound)?
+                        world
+                            .get_level(self.lidx)
+                            .ok_or(#engine_crate::core::ComponentGetMutError::NotFound)?
                             .acquire_component_internal_dyn_mut(self.tyid, self.pidx, self.gidx)?
                     ))
                 }
@@ -882,13 +885,14 @@ pub fn comp_def(input: TokenStream1) -> TokenStream1 {
                     }
 
                     #[doc = "Borrows the child Component immediately.\n\n# Errors\n\nReturns Err if the child Component is already mutably borrowed."]
-                    pub fn #get_name(
+                    pub fn #get_name<'w>(
                         &self,
+                        world: &'w #engine_crate::core::world::World,
                     ) -> ::std::result::Result<
-                        ::std::cell::Ref<'_, <#id_ty as #comp_mod::ISlotId>::TraitObject>,
+                        ::std::cell::Ref<'w, <#id_ty as #comp_mod::ISlotId>::TraitObject>,
                         ::std::cell::BorrowError,
                     > {
-                        match self.#name.get() {
+                        match self.#name.get(world) {
                             Ok(tr) => Ok(tr),
                             Err(#engine_crate::core::ComponentGetError::NotFound) => {
                                 panic!("child component should always be accessible")
@@ -900,13 +904,14 @@ pub fn comp_def(input: TokenStream1) -> TokenStream1 {
                     }
 
                     #[doc = "Mutably borrows the child Component immediately.\n\n# Errors\n\nReturns Err if the child Component is already borrowed."]
-                    pub fn #get_name_mut(
+                    pub fn #get_name_mut<'w>(
                         &self,
+                        world: &'w #engine_crate::core::world::World,
                     ) -> ::std::result::Result<
-                        ::std::cell::RefMut<'_, <#id_ty as #comp_mod::ISlotId>::TraitObject>,
+                        ::std::cell::RefMut<'w, <#id_ty as #comp_mod::ISlotId>::TraitObject>,
                         ::std::cell::BorrowMutError,
                     > {
-                        match self.#name.get_mut() {
+                        match self.#name.get_mut(world) {
                             Ok(tr) => Ok(tr),
                             Err(#engine_crate::core::ComponentGetMutError::NotFound) => {
                                 panic!("child component should always be accessible")
@@ -948,13 +953,14 @@ pub fn comp_def(input: TokenStream1) -> TokenStream1 {
                     }
 
                     #[doc = "Borrows the child Component immediately.\n\n# Errors\n\nReturns Err if the child Component is already mutably borrowed."]
-                    pub fn #get_name(
+                    pub fn #get_name<'w>(
                         &self,
+                        world: &'w #engine_crate::core::world::World,
                     ) -> ::std::result::Result<
-                        ::std::cell::Ref<'_, <#id_ty as #comp_mod::ISlotId>::TraitObject>,
+                        ::std::cell::Ref<'w, <#id_ty as #comp_mod::ISlotId>::TraitObject>,
                         ::std::cell::BorrowError,
                     > {
-                        match self.#name.get() {
+                        match self.#name.get(world) {
                             Ok(tr) => Ok(tr),
                             Err(#engine_crate::core::ComponentGetError::NotFound) => {
                                 panic!("child component should always be accessible")
@@ -966,13 +972,14 @@ pub fn comp_def(input: TokenStream1) -> TokenStream1 {
                     }
 
                     #[doc = "Mutably borrows the child Component immediately.\n\n# Errors\n\nReturns Err if the child Component is already borrowed."]
-                    pub fn #get_name_mut(
+                    pub fn #get_name_mut<'w>(
                         &self,
+                        world: &'w #engine_crate::core::world::World,
                     ) -> ::std::result::Result<
-                        ::std::cell::RefMut<'_, <#id_ty as #comp_mod::ISlotId>::TraitObject>,
+                        ::std::cell::RefMut<'w, <#id_ty as #comp_mod::ISlotId>::TraitObject>,
                         ::std::cell::BorrowMutError,
                     > {
-                        match self.#name.get_mut() {
+                        match self.#name.get_mut(world) {
                             Ok(tr) => Ok(tr),
                             Err(#engine_crate::core::ComponentGetMutError::NotFound) => {
                                 panic!("child component should always be accessible")
@@ -989,6 +996,7 @@ pub fn comp_def(input: TokenStream1) -> TokenStream1 {
                     /// Mutably borrows the old Component.
                     pub fn #spawn_in_name<C>(
                         &mut self,
+                        world: &#engine_crate::core::world::World,
                         info: C::SpawnInfo,
                     )
                     where
@@ -996,9 +1004,9 @@ pub fn comp_def(input: TokenStream1) -> TokenStream1 {
                             + #comp_mod::IComponent,
                         #comp_mod::ComponentId<C>: Into<#id_ty>
                     {
-                        Self::c_destroy_child(&self.#name);
+                        Self::c_destroy_child(world, &self.#name);
 
-                        self.#name = Self::c_spawn_child(self.c_self.clone().into(), info);
+                        self.#name = Self::c_spawn_child(world, self.c_self.clone().into(), info);
                     }
                 });
 
@@ -1029,13 +1037,14 @@ pub fn comp_def(input: TokenStream1) -> TokenStream1 {
                     }
 
                     #[doc = "Borrows the child Component immediately, if present.\n\nReturns None if no Component is present.\n\n# Errors\n\nThe inner Result returns Err if the child Component is already mutably borrowed."]
-                    pub fn #get_name(
+                    pub fn #get_name<'w>(
                         &self,
+                        world: &'w #engine_crate::core::world::World,
                     ) -> ::std::option::Option<::std::result::Result<
-                        ::std::cell::Ref<'_, <#id_ty as #comp_mod::ISlotId>::TraitObject>,
+                        ::std::cell::Ref<'w, <#id_ty as #comp_mod::ISlotId>::TraitObject>,
                         ::std::cell::BorrowError,
                     >> {
-                        Some(match self.#name.as_ref()?.get() {
+                        Some(match self.#name.as_ref()?.get(world) {
                             Ok(tr) => Ok(tr),
                             Err(#engine_crate::core::ComponentGetError::NotFound) => {
                                 panic!("child component should always be accessible")
@@ -1047,13 +1056,14 @@ pub fn comp_def(input: TokenStream1) -> TokenStream1 {
                     }
 
                     #[doc = "Mutably borrows the child Component immediately, if present.\n\nReturns None if no Component is present.\n\n# Errors\n\nThe inner Result returns Err if the child Component is already borrowed."]
-                    pub fn #get_name_mut(
+                    pub fn #get_name_mut<'w>(
                         &self,
+                        world: &'w #engine_crate::core::world::World,
                     ) -> ::std::option::Option<::std::result::Result<
-                        ::std::cell::RefMut<'_, <#id_ty as #comp_mod::ISlotId>::TraitObject>,
+                        ::std::cell::RefMut<'w, <#id_ty as #comp_mod::ISlotId>::TraitObject>,
                         ::std::cell::BorrowMutError,
                     >> {
-                        Some(match self.#name.as_ref()?.get_mut() {
+                        Some(match self.#name.as_ref()?.get_mut(world) {
                             Ok(tr) => Ok(tr),
                             Err(#engine_crate::core::ComponentGetMutError::NotFound) => {
                                 panic!("child component should always be accessible")
@@ -1067,6 +1077,7 @@ pub fn comp_def(input: TokenStream1) -> TokenStream1 {
                     #[doc = "Spawns a new Component of the given type and replaces the previous one, if present.\n\n# Borrows\n\nMutably borrows the replaced child Component and all of its descendants, recursively, while destroying it."]
                     pub fn #spawn_in_name<C>(
                         &mut self,
+                        world: &#engine_crate::core::world::World,
                         info: C::SpawnInfo,
                     )
                     where
@@ -1075,20 +1086,21 @@ pub fn comp_def(input: TokenStream1) -> TokenStream1 {
                         #comp_mod::ComponentId<C>: Into<#id_ty>
                     {
                         if let Some(old_id) = &self.#name {
-                            Self::c_destroy_child(old_id);
+                            Self::c_destroy_child(world, old_id);
                         }
 
                         self.#name =
-                            Some(Self::c_spawn_child(self.c_self.clone().into(), info));
+                            Some(Self::c_spawn_child(world, self.c_self.clone().into(), info));
                     }
 
                     #[doc = "Clears the child Component, if present.\n\n# Borrows\n\nMutably borrows the removed child Component and all of its descendants, recursively, while destroying it."]
                     pub fn #clear_name(
                         &mut self,
+                        world: &#engine_crate::core::world::World,
                     ) -> bool {
                         match &self.#name {
                             Some(old_id) => {
-                                Self::c_destroy_child(old_id);
+                                Self::c_destroy_child(world, old_id);
                                 self.#name = None;
                                 true
                             }
@@ -1146,14 +1158,15 @@ pub fn comp_def(input: TokenStream1) -> TokenStream1 {
                     }
 
                     #[doc = "Borrows the child Component at the given index immediately.\n\nReturns None if the index is out of bounds.\n\n# Errors\n\nThe inner Result returns Err if the child Component is already mutably borrowed."]
-                    pub fn #name_get_at_tr(
+                    pub fn #name_get_at_tr<'w>(
                         &self,
+                        world: &'w #engine_crate::core::world::World,
                         index: usize,
                     ) -> ::std::option::Option<::std::result::Result<
-                        ::std::cell::Ref<'_, <#id_ty as #comp_mod::ISlotId>::TraitObject>,
+                        ::std::cell::Ref<'w, <#id_ty as #comp_mod::ISlotId>::TraitObject>,
                         ::std::cell::BorrowError,
                     >> {
-                        Some(match self.#name.get(index)?.get() {
+                        Some(match self.#name.get(index)?.get(world) {
                             Ok(tr) => Ok(tr),
                             Err(#engine_crate::core::ComponentGetError::NotFound) => {
                                 panic!("child component should always be accessible")
@@ -1165,14 +1178,15 @@ pub fn comp_def(input: TokenStream1) -> TokenStream1 {
                     }
 
                     #[doc = "Mutably borrows the child Component at the given index immediately.\n\nReturns None if the index is out of bounds.\n\n# Errors\n\nThe inner Result returns Err if the child Component is already borrowed."]
-                    pub fn #name_get_at_mut_tr(
+                    pub fn #name_get_at_mut_tr<'w>(
                         &self,
+                        world: &'w #engine_crate::core::world::World,
                         index: usize,
                     ) -> ::std::option::Option<::std::result::Result<
-                        ::std::cell::RefMut<'_, <#id_ty as #comp_mod::ISlotId>::TraitObject>,
+                        ::std::cell::RefMut<'w, <#id_ty as #comp_mod::ISlotId>::TraitObject>,
                         ::std::cell::BorrowMutError,
                     >> {
-                        Some(match self.#name.get(index)?.get_mut() {
+                        Some(match self.#name.get(index)?.get_mut(world) {
                             Ok(tr) => Ok(tr),
                             Err(#engine_crate::core::ComponentGetMutError::NotFound) => {
                                 panic!("child component should always be accessible")
@@ -1190,6 +1204,7 @@ pub fn comp_def(input: TokenStream1) -> TokenStream1 {
                     #[doc = "Removes the Component at the given index.\n\n# Borrows\n\nMutably borrows the removed child Component and all of its descendants, recursively, while destroying it."]
                     pub fn #name_remove_at(
                         &mut self,
+                        world: &#engine_crate::core::world::World,
                         index: usize,
                     ) -> bool {
                         if index >= self.#name.len() {
@@ -1198,7 +1213,7 @@ pub fn comp_def(input: TokenStream1) -> TokenStream1 {
 
                         let old_id = self.#name.remove(index);
 
-                        Self::c_destroy_child(&old_id);
+                        Self::c_destroy_child(world, &old_id);
 
                         true
                     }
@@ -1206,10 +1221,11 @@ pub fn comp_def(input: TokenStream1) -> TokenStream1 {
                     #[doc = "Removes the given Component, if it is present.\n\n# Borrows\n\nMutably borrows the removed child Component and all of its descendants, recursively, while destroying it."]
                     pub fn #name_remove_id(
                         &mut self,
+                        world: &#engine_crate::core::world::World,
                         id: &#id_ty,
                     ) -> bool {
                         if let Some(index) = self.#name_find_id(id) {
-                            self.#name_remove_at(index)
+                            self.#name_remove_at(world, index)
                         } else {
                             false
                         }
@@ -1218,6 +1234,7 @@ pub fn comp_def(input: TokenStream1) -> TokenStream1 {
                     #[doc = "Inserts a new Component at the given index.\n\n# Borrows\n\nMutably borrows the new Component's slot in its Level while spawning."]
                     pub fn #name_spawn_at<C>(
                         &mut self,
+                        world: &#engine_crate::core::world::World,
                         index: usize,
                         info: C::SpawnInfo,
                     )
@@ -1227,7 +1244,7 @@ pub fn comp_def(input: TokenStream1) -> TokenStream1 {
                         #comp_mod::ComponentId<C>: Into<#id_ty>
                     {
                         let new_id: #id_ty =
-                            Self::c_spawn_child(self.c_self.clone().into(), info);
+                            Self::c_spawn_child(world, self.c_self.clone().into(), info);
 
                         self.#name.insert(index, new_id);
                     }
@@ -1349,11 +1366,11 @@ pub fn comp_def(input: TokenStream1) -> TokenStream1 {
 
                     let mut sig_ok = true;
 
-                    if sig.variadic.is_some() || sig.inputs.len() != 3 {
+                    if sig.variadic.is_some() || sig.inputs.len() != 4 {
                         add_behavior_error(
                             &mut behavior_errors,
                             attr_span,
-                            "#[init] must take exactly three arguments".to_string(),
+                            "#[init] must take exactly four arguments".to_string(),
                         );
                         sig_ok = false;
                     }
@@ -1379,20 +1396,29 @@ pub fn comp_def(input: TokenStream1) -> TokenStream1 {
                             })
                             .collect();
 
-                        if !is_plain_path(tys[0], "ComponentParent") {
+                        if !is_world_ref(tys[0]) {
                             add_behavior_error(
                                 &mut behavior_errors,
                                 attr_span,
-                                "the first parameter of #[init] must have type `ComponentParent`"
+                                "the first parameter of #[init] must have type `&World`"
                                     .to_string(),
                             );
                         }
 
-                        if !is_component_id_of(tys[1], &name) {
+                        if !is_plain_path(tys[1], "ComponentParent") {
                             add_behavior_error(
                                 &mut behavior_errors,
                                 attr_span,
-                                "the second parameter of #[init] must have type `ComponentId<Self>`"
+                                "the second parameter of #[init] must have type `ComponentParent`"
+                                    .to_string(),
+                            );
+                        }
+
+                        if !is_component_id_of(tys[2], &name) {
+                            add_behavior_error(
+                                &mut behavior_errors,
+                                attr_span,
+                                "the third parameter of #[init] must have type `ComponentId<Self>`"
                                     .to_string(),
                             );
                         }
@@ -1410,7 +1436,7 @@ pub fn comp_def(input: TokenStream1) -> TokenStream1 {
                             );
                         }
 
-                        spawn_info_ty = Some(tys[2].clone());
+                        spawn_info_ty = Some(tys[3].clone());
                     }
 
                     let info_ty =
@@ -1418,6 +1444,7 @@ pub fn comp_def(input: TokenStream1) -> TokenStream1 {
 
                     quote_spanned! { attr_span=>
                         const _: fn(
+                            &#engine_crate::core::world::World,
                             #comp_mod::ComponentParent,
                             #comp_mod::ComponentId<#name>,
                             #info_ty,
@@ -1495,18 +1522,18 @@ pub fn comp_def(input: TokenStream1) -> TokenStream1 {
             impl #name {
                 /// (**INTERNAL**) Calls [`destroy`](IComponent::destroy) on the
                 /// child Component, then removes it from its Level.
-                fn c_destroy_child<I>(id: &I)
+                fn c_destroy_child<I>(world: &#engine_crate::core::world::World, id: &I)
                 where
                     I: #comp_mod::ISlotId,
                 {
                     use #comp_mod::ISlotId;
 
-                    let mut child = id.get_mut().expect("removed by other source");
-                    child.destroy();
+                    let mut child = id.get_mut(world).expect("removed by other source");
+                    child.destroy(world);
                     drop(child);
 
                     let (pidx, gidx, tyid) = ISlotId::acquire_parts(id);
-                    let lvl = #engine_crate::core::world::world()
+                    let lvl = world
                         .get_level(ISlotId::level_id(id))
                         .expect("level destroyed");
 
@@ -1516,6 +1543,7 @@ pub fn comp_def(input: TokenStream1) -> TokenStream1 {
                 /// (**INTERNAL**) Spawns a new child Component under `parent`, runs its
                 /// `post_init` traversal, then converts the returned ID into `I`.
                 fn c_spawn_child<C, I>(
+                    world: &#engine_crate::core::world::World,
                     parent: #comp_mod::ComponentParent,
                     info: C::SpawnInfo,
                 ) -> I
@@ -1525,9 +1553,9 @@ pub fn comp_def(input: TokenStream1) -> TokenStream1 {
                         + #comp_mod::IComponent,
                     #comp_mod::ComponentId<C>: Into<I>,
                 {
-                    let cid = <C as #comp_mod::IComponent>::spawn(parent, info);
+                    let cid = <C as #comp_mod::IComponent>::spawn(world, parent, info);
 
-                    cid.get_mut().expect("just spawned").post_init();
+                    cid.get_mut(world).expect("just spawned").post_init(world);
 
                     cid.into()
                 }
@@ -1547,6 +1575,7 @@ pub fn comp_def(input: TokenStream1) -> TokenStream1 {
                 type SpawnInfo = #spawn_info_ty;
 
                 fn spawn(
+                    world: &#engine_crate::core::world::World,
                     parent: #comp_mod::ComponentParent,
                     info: #spawn_info_ty,
                 ) -> #comp_mod::ComponentId<Self>
@@ -1554,10 +1583,12 @@ pub fn comp_def(input: TokenStream1) -> TokenStream1 {
                     Self: Sized
                 {
                     let lvl_id = parent.level_id();
-                    let lvl = #engine_crate::core::world::world().get_level(lvl_id).expect("level destroyed");
+                    let lvl = world
+                        .get_level(lvl_id)
+                        .expect("level destroyed");
                     let self_id = lvl.reserve_slot_internal::<Self>();
 
-                    let init = Self::#user_init(parent.clone(), self_id.clone(), info);
+                    let init = Self::#user_init(world, parent.clone(), self_id.clone(), info);
 
                     let self_ = Self {
                         c_self: self_id.clone(),
@@ -1565,7 +1596,9 @@ pub fn comp_def(input: TokenStream1) -> TokenStream1 {
                         #(#init_final),*
                     };
 
-                    let lvl = #engine_crate::core::world::world().get_level(lvl_id).expect("level destroyed");
+                    let lvl = world
+                        .get_level(lvl_id)
+                        .expect("level destroyed");
                     let (pidx, gidx, _) = #comp_mod::ISlotId::acquire_parts(&self_id);
 
                     lvl.fill_slot_internal(pidx, gidx, self_);
@@ -1648,6 +1681,17 @@ fn is_plain_path(ty: &Type, name: &str) -> bool {
         Some(segment)
             if segment.ident == name && matches!(segment.arguments, PathArguments::None)
     )
+}
+
+/// Whether `ty` is `&World` or `&SomePath::World`.
+fn is_world_ref(ty: &Type) -> bool {
+    let Type::Reference(r) = ty else {
+        return false;
+    };
+    if r.mutability.is_some() {
+        return false;
+    }
+    is_plain_path(&r.elem, "World")
 }
 
 /// Whether `ty` is `ComponentId<Self>` or `ComponentId<{struct_name}>`.
