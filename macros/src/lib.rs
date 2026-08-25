@@ -623,35 +623,36 @@ impl Parse for ComponentDef {
 /// The basic structure is
 ///
 /// ```rust
-/// #[comp_def]
-/// struct CComponent {
-///     // Child components, stored as private fields with getters and setters.
-///     components {
-///         static component1: CExample, // MUST be a concrete type.
-///         dyn component2: SExample, // Concrete type or dyn SlotName.
-///         dyn? component3: SExample, // Same as component2, but behaves like an Option.
-///         dyn* component4: SExample, // Same as component2, but behaves like a Vec.
-///     }
-///     // Fields added to your structure
-///     variables {
-///         var1: Type1,
-///         pub var2: Type2,
-///     }
-///     // Special impl block
-///     behaviors {
-///         // Called when CComponent is spawned. CComponentInit holds initial values for all
-///         // variables and ALL child Components. Spawn static children inside init via
-///         // `CExample::spawn(self_id.into(), info)`.
-///         //
-///         // Note: self_id can be passed around but will return None on all accesses until after
-///         // init completes
-///         #[init]
-///         fn init(
-///             parent: ComponentParent,
-///             self_id: ComponentId<Self>,
-///             info: ()
-///         ) -> CComponentInit {
-///             ...
+/// comp_def! {
+///     struct CComponent {
+///         // Child components, stored as private fields with getters and setters.
+///         components {
+///             static component1: CExample, // MUST be a concrete type.
+///             dyn component2: SExample, // Concrete type or dyn SlotName.
+///             dyn? component3: SExample, // Same as component2, but behaves like an Option.
+///             dyn* component4: SExample, // Same as component2, but behaves like a Vec.
+///         }
+///         // Fields added to your structure
+///         variables {
+///             var1: Type1,
+///             pub var2: Type2,
+///         }
+///         // Special impl block
+///         behaviors {
+///             // Called when CComponent is spawned. CComponentInit holds initial values for all
+///             // variables and ALL child Components. Spawn static children inside init via
+///             // `CExample::spawn(self_id.into(), info)`.
+///             //
+///             // Note: self_id can be passed around but will return None on all accesses until after
+///             // init completes
+///             #[init]
+///             fn init(
+///                 parent: ComponentParent,
+///                 self_id: ComponentId<Self>,
+///                 info: ()
+///             ) -> CComponentInit {
+///                 ...
+///             }
 ///         }
 ///     }
 /// }
@@ -1299,8 +1300,10 @@ pub fn comp_def(input: TokenStream1) -> TokenStream1 {
     let mut behavior_checks = Vec::new();
     let mut behavior_errors: Option<syn::Error> = None;
     let mut spawn_info_ty: Option<Type> = None;
+    let mut trait_hook_items: Vec<ImplItem> = Vec::new();
+    let mut moved_to_trait: Vec<usize> = Vec::new();
 
-    for item in &mut behaviors_section_items {
+    for (idx, item) in behaviors_section_items.iter_mut().enumerate() {
         let ImplItem::Fn(func) = item else {
             continue;
         };
@@ -1331,13 +1334,13 @@ pub fn comp_def(input: TokenStream1) -> TokenStream1 {
             continue;
         }
 
-        for attr_ident in markers {
+        for attr_ident in &markers {
             let check = match attr_ident.to_string().as_str() {
                 "init" => {
                     set_behavior(
                         &mut user_init,
                         fn_ident.clone(),
-                        &attr_ident,
+                        attr_ident,
                         &mut behavior_errors,
                     );
 
@@ -1421,41 +1424,35 @@ pub fn comp_def(input: TokenStream1) -> TokenStream1 {
                         ) -> #initer_name = #name::#fn_ident;
                     }
                 }
-                "destroy" => {
-                    set_behavior(
-                        &mut user_destroy,
-                        fn_ident.clone(),
-                        &attr_ident,
-                        &mut behavior_errors,
-                    );
+                "destroy" | "post_init" | "pre_phys" | "post_phys" | "idle" => {
+                    let hook_ident = syn::Ident::new(&format!("{attr_ident}_hook"), fn_ident.span());
 
-                    quote_spanned! { attr_ident.span()=>
-                        const _: fn(&mut #name) = #name::#fn_ident;
-                    }
-                }
-                "post_init" => {
-                    set_behavior(
-                        &mut user_post_init,
-                        fn_ident.clone(),
-                        &attr_ident,
-                        &mut behavior_errors,
-                    );
-
-                    quote_spanned! { attr_ident.span()=>
-                        const _: fn(&mut #name) = #name::#fn_ident;
-                    }
-                }
-                "pre_phys" | "post_phys" | "idle" => {
                     let slot = match attr_ident.to_string().as_str() {
+                        "destroy" => &mut user_destroy,
+                        "post_init" => &mut user_post_init,
                         "pre_phys" => &mut user_pre_phys,
                         "post_phys" => &mut user_post_phys,
                         _ => &mut user_idle,
                     };
 
-                    set_behavior(slot, fn_ident.clone(), &attr_ident, &mut behavior_errors);
+                    set_behavior(slot, fn_ident.clone(), attr_ident, &mut behavior_errors);
 
-                    quote_spanned! { attr_ident.span()=>
-                        const _: fn(&mut #name, f32) = #name::#fn_ident;
+                    let mut renamed = func.clone();
+                    renamed.sig.ident = hook_ident.clone();
+
+                    trait_hook_items.push(ImplItem::Fn(renamed));
+
+                    let takes_delta =
+                        matches!(attr_ident.to_string().as_str(), "pre_phys" | "post_phys" | "idle");
+
+                    if takes_delta {
+                        quote_spanned! { attr_ident.span()=>
+                            const _: fn(&mut #name, f32) = #name::#hook_ident;
+                        }
+                    } else {
+                        quote_spanned! { attr_ident.span()=>
+                            const _: fn(&mut #name) = #name::#hook_ident;
+                        }
                     }
                 }
                 _ => unreachable!(),
@@ -1463,6 +1460,14 @@ pub fn comp_def(input: TokenStream1) -> TokenStream1 {
 
             behavior_checks.push(check);
         }
+
+        if markers.iter().any(|m| m != "init") {
+            moved_to_trait.push(idx);
+        }
+    }
+
+    for idx in moved_to_trait.into_iter().rev() {
+        behaviors_section_items.remove(idx);
     }
 
     if let Some(errors) = behavior_errors {
@@ -1474,19 +1479,6 @@ pub fn comp_def(input: TokenStream1) -> TokenStream1 {
     };
 
     let spawn_info_ty = spawn_info_ty.unwrap_or_else(|| parse_quote! { () });
-
-    let user_post_init = user_post_init
-        .map(|i| quote! { self.#i(); })
-        .unwrap_or_default();
-    let user_pre_phys = user_pre_phys
-        .map(|i| quote! { self.#i(delta); })
-        .unwrap_or_default();
-    let user_post_phys = user_post_phys
-        .map(|i| quote! { self.#i(delta); })
-        .unwrap_or_default();
-    let user_idle = user_idle
-        .map(|i| quote! { self.#i(delta); })
-        .unwrap_or_default();
 
     let out = quote! {
         mod #mod_name {
@@ -1501,30 +1493,28 @@ pub fn comp_def(input: TokenStream1) -> TokenStream1 {
             }
 
             impl #name {
-                /// (**INTERNAL**) Runs `destroy_hook` on a child Component, then removes it
-                /// from its Level.
+                /// (**INTERNAL**) Calls [`destroy`](IComponent::destroy) on the
+                /// child Component, then removes it from its Level.
                 fn c_destroy_child<I>(id: &I)
                 where
                     I: #comp_mod::ISlotId,
                 {
                     use #comp_mod::ISlotId;
 
-                    let (pidx, gidx, tyid) = ISlotId::acquire_parts(id);
-                    let level = ISlotId::level_id(id);
-
                     let mut child = id.get_mut().expect("removed by other source");
-                    child.destroy_hook();
+                    child.destroy();
                     drop(child);
 
+                    let (pidx, gidx, tyid) = ISlotId::acquire_parts(id);
                     let lvl = #engine_crate::core::world::world()
-                        .get_level(level)
+                        .get_level(ISlotId::level_id(id))
                         .expect("level destroyed");
 
                     lvl.remove_component_internal(tyid, pidx, gidx);
                 }
 
                 /// (**INTERNAL**) Spawns a new child Component under `parent`, runs its
-                /// `post_init_hook`, then converts the returned ID into `I`.
+                /// `post_init` traversal, then converts the returned ID into `I`.
                 fn c_spawn_child<C, I>(
                     parent: #comp_mod::ComponentParent,
                     info: C::SpawnInfo,
@@ -1537,22 +1527,9 @@ pub fn comp_def(input: TokenStream1) -> TokenStream1 {
                 {
                     let cid = <C as #comp_mod::IComponent>::spawn(parent, info);
 
-                    cid.get_mut().expect("just spawned").post_init_hook();
+                    cid.get_mut().expect("just spawned").post_init();
 
                     cid.into()
-                }
-
-                /// (**INTERNAL**) Runs `f` on every direct child Component.
-                fn c_each_child_mut(
-                    &mut self,
-                    mut f: impl FnMut(&mut dyn #comp_mod::IComponent),
-                ) {
-                    use #comp_mod::ISlotId;
-
-                    for id in self.children() {
-                        let mut child = id.get_mut().expect("child removed");
-                        f(&mut *child);
-                    }
                 }
 
                 #(#gen_gs_fns)*
@@ -1596,46 +1573,7 @@ pub fn comp_def(input: TokenStream1) -> TokenStream1 {
                     self_id
                 }
 
-                fn post_init_hook(&mut self) {
-                    #user_post_init
-
-                    self.c_each_child_mut(|child| child.post_init_hook());
-                }
-
-                fn destroy_hook(&mut self) {
-                    #user_destroy
-
-                    for id in self.children() {
-                        Self::c_destroy_child(&id);
-                    }
-                }
-
-                fn pre_phys_hook(
-                    &mut self,
-                    delta: f32
-                ) {
-                    #user_pre_phys
-
-                    self.c_each_child_mut(|child| child.pre_phys_hook(delta));
-                }
-
-                fn post_phys_hook(
-                    &mut self,
-                    delta: f32
-                ) {
-                    self.c_each_child_mut(|child| child.post_phys_hook(delta));
-
-                    #user_post_phys
-                }
-
-                fn idle_hook(
-                    &mut self,
-                    delta: f32
-                ) {
-                    #user_idle
-
-                    self.c_each_child_mut(|child| child.idle_hook(delta));
-                }
+                #(#trait_hook_items)*
             }
 
             const fn _assert_valid_static<T: #comp_mod::StaticValid>() {}

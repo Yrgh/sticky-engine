@@ -502,7 +502,7 @@ impl Level {
         for top_id in self.top_level.borrow_mut().drain(..) {
             let (top_pidx, top_gidx, top_tyid) = top_id.acquire_parts();
             let mut top = top_id.get_mut().expect("just acquired from top");
-            top.destroy_hook();
+            top.destroy();
             drop(top);
 
             self.remove_component_internal(top_tyid, top_pidx, top_gidx);
@@ -513,7 +513,7 @@ impl Level {
     pub fn spawn_top_level<C: IComponent>(&self, info: C::SpawnInfo) -> ComponentId<C> {
         let id = C::spawn(self.id().into(), info);
         self.top_level.borrow_mut().push(id.clone().into());
-        id.get_mut().expect("component was just added").post_init_hook();
+        id.get_mut().expect("component was just added").post_init();
         id
     }
 
@@ -532,11 +532,11 @@ impl Level {
     /// # Borrows
     ///
     /// Mutably borrows the removed Component's slot, and the removed Component
-    /// plus all of its descendants (recursively) via
-    /// [`destroy_hook`](IComponent::destroy_hook).
+    /// plus all of its descendants (via queue-based traversal) through
+    /// [`destroy`](IComponent::destroy).
     pub fn remove_top_level(&self, position: usize) {
         let id = self.top_level.borrow_mut().remove(position);
-        id.get_mut().expect("id is in world").destroy_hook();
+        id.get_mut().expect("id is in world").destroy();
         let (pidx, gidx, tyid) = id.acquire_parts();
         self.remove_component_internal(tyid, pidx, gidx);
     }

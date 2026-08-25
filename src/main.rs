@@ -48,8 +48,6 @@ comp_def! {
             trans: Trans3ProviderTop,
         }
         behaviors {
-            use crate::*;
-            
             #[init]
             fn init(
                 parent: ComponentParent,

@@ -307,7 +307,7 @@ impl ApplicationHandler for MainLoop {
             for level in self.world.iter_levels() {
                 for id in level.iter_top_level() {
                     let mut comp = id.get_mut().expect("component was just acquired");
-                    comp.pre_phys_hook(self.world.get_stable_tick_rate().as_secs_f32());
+                    comp.pre_phys(self.world.get_stable_tick_rate().as_secs_f32());
                 }
             }
 
@@ -316,7 +316,7 @@ impl ApplicationHandler for MainLoop {
             for level in self.world.iter_levels() {
                 for id in level.iter_top_level() {
                     let mut comp = id.get_mut().expect("component was just acquired");
-                    comp.post_phys_hook(self.world.get_stable_tick_rate().as_secs_f32());
+                    comp.post_phys(self.world.get_stable_tick_rate().as_secs_f32());
                 }
             }
 
@@ -336,7 +336,7 @@ impl ApplicationHandler for MainLoop {
 
             for level in self.world.iter_levels() {
                 for id in level.iter_top_level() {
-                    id.get_mut().expect("just acquired").idle_hook(delta);
+                    id.get_mut().expect("just acquired").idle(delta);
                 }
             }
 
