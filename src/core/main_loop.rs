@@ -8,11 +8,12 @@
 
 use std::{
     any::Any,
+    collections::{HashMap, VecDeque},
     sync::OnceLock,
     time::{Duration, Instant},
 };
 
-use anyhow::Result as AResult;
+use anyhow::{Result as AResult, bail};
 use winit::{
     application::ApplicationHandler,
     event::WindowEvent,
@@ -23,6 +24,7 @@ use futures::channel::{mpsc, oneshot};
 
 use crate::core::{
     component::ISlotId,
+    level::LevelIndex,
     world::{World, WorldBuilder},
 };
 
@@ -87,10 +89,99 @@ impl MainLoop {
         false
     }
 
-    fn render_idle(&mut self) {
+    fn render_idle(&mut self) -> AResult<()> {
         let _span = tracing::debug_span!("engine_render").entered();
 
-        todo!()
+        // Step 1: Figure out the order to render in.
+        // Step 2: Collect the things to render
+        // Step 3: Submit and distribute
+
+        let Some(renderer) = self.world.get_renderer() else {
+            unreachable!()
+        };
+
+        let mut level_to_parts = self
+            .world
+            .iter_levels()
+            .filter(|l| l.is_active())
+            .map(|l| -> AResult<_> {
+                let rq = l.get_rendering_queue();
+                let deps = rq.search_dependencies();
+                let (lvl_instructions, win_instructions) = renderer.render_level(&rq)?;
+                Ok((l.id(), (deps, lvl_instructions, win_instructions)))
+            })
+            .collect::<AResult<HashMap<_, _>>>()?;
+
+        // Kahn's algorithm
+        let n = level_to_parts.len();
+        let mut dependents: HashMap<LevelIndex, Vec<_>> = HashMap::with_capacity(n);
+        let mut in_degrees = HashMap::with_capacity(n);
+
+        for (lvl, (deps, _, _)) in &level_to_parts {
+            in_degrees.insert(*lvl, deps.len());
+            for dep in deps {
+                dependents.entry(*dep).or_default().push(*lvl);
+            }
+        }
+
+        let mut queue: VecDeque<_> = in_degrees
+            .iter()
+            .filter_map(|(lvl, d)| (*d == 0).then_some(*lvl))
+            .collect();
+
+        let mut order = Vec::with_capacity(n);
+
+        while let Some(lvl) = queue.pop_front() {
+            order.push(lvl);
+            if let Some(dependents) = dependents.get(&lvl) {
+                for dependent in dependents {
+                    let Some(deg) = in_degrees.get_mut(dependent) else {
+                        bail!("dependent should exist in in_degrees");
+                    };
+
+                    *deg -= 1;
+                    if *deg == 0 {
+                        queue.push_back(*dependent);
+                    }
+                }
+            }
+        }
+
+        if order.len() != n {
+            bail!("cycle detected when trying to render Levels");
+        }
+
+        for lvl in &order {
+            let Some(parts) = level_to_parts.get_mut(lvl) else {
+                bail!("level should exist in level_to_parts");
+            };
+
+            if let Some(win_instructions) = parts.2.take() {
+                let Some(level) = self.world.get_level(*lvl) else {
+                    bail!("level index should be valid because it came from iter_levels");
+                };
+
+                if let Some(win) = level.get_window() {
+                    let Some(mut window) = self.world.get_window_mut_int(win) else {
+                        continue;
+                    };
+
+                    window.set_instructions(win_instructions);
+                    
+                    if let Some(os) = window.as_os() {
+                        os.request_redraw();
+                    }
+                }
+            }
+        }
+
+        let mut level_instructions = order
+            .into_iter()
+            .filter_map(|lvl| Some(level_to_parts.remove(&lvl)?.1));
+
+        renderer.submit_level_instructions(&mut level_instructions)?;
+
+        Ok(())
     }
 
     fn physics_handling(&mut self) -> bool {
@@ -249,7 +340,10 @@ impl ApplicationHandler for MainLoop {
 
             // Only do rendering work when it is at all possible.
             if self.world.get_renderer().is_some() {
-                self.render_idle();
+                match self.render_idle() {
+                    Ok(()) => {},
+                    Err(e) => tracing::error!("rendering failed: {e}")
+                }
             }
         }
 
@@ -342,7 +436,13 @@ pub unsafe fn run_main_loop(
 
     let event_loop = EventLoop::new()?;
     event_loop.set_control_flow(winit::event_loop::ControlFlow::Poll);
-    event_loop.run_app(&mut main_loop)?;
+    let run_result = event_loop.run_app(&mut main_loop);
+
+    // Ensure the main loop drops before the event_loop because of potential
+    // errors on close.
+    drop(main_loop);
+
+    run_result?;
 
     Ok(())
 }

@@ -12,12 +12,12 @@
 
 use std::{any::Any, rc::Rc, sync::Arc};
 
-use anyhow::Result as AResult;
+use anyhow::{Result as AResult, bail};
 
 use winit::{dpi::PhysicalSize, event::WindowEvent, window::Window as OsWindow};
 
 use crate::core::{
-    gpu_api::{IRenderer, ISurface, WindowInstructions},
+    gpu_api::{IRenderer, ISurface, BoxedInstructions},
     level::LevelIndex,
     util::gen_slot_vec::SlotIndex,
     world::World,
@@ -96,8 +96,7 @@ pub(crate) trait IWindowInt: Any {
 
     fn resume(&mut self);
 
-    #[expect(unused)]
-    fn set_instructions(&mut self, instructions: WindowInstructions);
+    fn set_instructions(&mut self, instructions: BoxedInstructions);
 
     /// Attempts a non-blocking acquisition of the next swapchain image.
     ///
@@ -173,11 +172,17 @@ impl<T: IWindowInt> IWindow for T {
 pub struct RootWindow {
     id: WindowId,
     level: LevelIndex,
-    window: Arc<OsWindow>,
     size: PhysicalSize<u32>,
     renderer: Rc<dyn IRenderer>,
     surface: Option<Box<dyn ISurface>>,
-    instructions: Option<WindowInstructions>,
+    instructions: Option<BoxedInstructions>,
+    /// The OS window backing this surface.
+    ///
+    /// Declared last so it is dropped last: the Vulkan surface/swapchain must
+    /// be destroyed before the window, because the window owns the underlying
+    /// Wayland `wl_surface`. Destroying the swapchain after the window is gone
+    /// makes the driver call into a freed `wl_surface` and segfault.
+    window: Arc<OsWindow>,
 }
 
 impl RootWindow {
@@ -195,11 +200,11 @@ impl RootWindow {
         Self {
             id,
             level,
-            window: Arc::new(window),
             size,
             renderer,
             surface: None,
             instructions: None,
+            window: Arc::new(window),
         }
     }
 
@@ -265,21 +270,23 @@ impl IWindowInt for RootWindow {
     fn draw(&mut self) -> AResult<()> {
         // Try to acquire again, since this is no-op if we already have acquired a valid swapchain.
         if !self.try_acquire_swapchain() {
-            return Ok(());
+            bail!("not ready to render");
         }
 
         let Some(surface) = &self.surface else {
-            return Ok(());
+            bail!("no surface");
         };
 
         if let Some(instructions) = &self.instructions {
             instructions.render(surface.as_ref())?;
+        } else {
+            bail!("no instructions");
         }
 
         Ok(())
     }
 
-    fn set_instructions(&mut self, instructions: WindowInstructions) {
+    fn set_instructions(&mut self, instructions: BoxedInstructions) {
         self.instructions = Some(instructions);
     }
 

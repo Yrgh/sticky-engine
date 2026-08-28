@@ -18,7 +18,6 @@ impl RenderingQueue {
         Self {}
     }
 
-    #[expect(unused)]
     /// Searches all submitted items for references to camera
     pub(crate) fn search_dependencies(&self) -> HashSet<LevelIndex> {
         HashSet::new()

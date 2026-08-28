@@ -12,8 +12,9 @@ categories = ["game-development", "game-engines", "rendering", "rendering::engin
 members = ["macros"]
 
 [features]
-default = ["gpu-vulkan"]
+default = ["vulkan-renderer"]
 gpu-vulkan = ["dep:vulkano"]
+vulkan-renderer = ["gpu-vulkan"]
 
 [dependencies]
 rapier3d = "0.34.0"
@@ -29,3 +30,6 @@ smallvec = "1.15.2"
 thiserror = "2.0.20"
 tracing = "0.1.44"
 futures = "0.3.34"
+
+[dev-dependencies]
+tracing-subscriber = "0.3.23"

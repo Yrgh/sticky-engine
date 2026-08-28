@@ -1,4 +1,5 @@
-use sticky_engine::prelude::*;
+use sticky_engine::{builtin::renderer_vk::VkRenderer, prelude::*};
+use tracing_subscriber::fmt::format::FmtSpan;
 
 comp_def! {
     (in sticky_engine)
@@ -81,13 +82,28 @@ impl STrans3 for CTop {
 }
 
 fn main() {
+    tracing::subscriber::set_global_default(
+        tracing_subscriber::fmt()
+            .with_span_events(FmtSpan::NONE)
+            .with_target(true)
+            .finish()
+    )
+    .expect("failed to set global subscriber");
+
     let mut builder = World::builder();
-    builder.with_window();
+    builder.with_renderer::<VkRenderer>(()).with_window();
 
     unsafe {
         run_main_loop(builder, |world| {
-            let main_level = world.main_level().expect("main level");
+            let main_level = world
+                .main_level()
+                .expect("main level should exist after main window was created");
             main_level.spawn_top_level::<CTop>(world, ());
+
+            std::thread::spawn(|| {
+                std::thread::sleep(std::time::Duration::from_secs(2));
+                let _ = queue_quit();
+            });
         })
     }
     .expect("main loop failed");

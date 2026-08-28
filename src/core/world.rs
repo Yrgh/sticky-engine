@@ -587,6 +587,11 @@ impl World {
         if let MainMode::Window = &builder.main_mode {
             let window = self.create_root_window(Window::default_attributes())?;
             self.main_window.set(Some(window.handle()));
+            self.main_level.set(Some(
+                self.get_window(window.handle())
+                    .expect("window should exist after creation")
+                    .level(),
+            ));
             window.leak();
         }
 

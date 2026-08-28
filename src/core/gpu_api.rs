@@ -38,6 +38,10 @@ pub trait ISurface: Any {
 
     /// Called when the window is resized.
     fn on_resize(&mut self, new_size: PhysicalSize<u32>);
+
+    /// Returns `self` as `&dyn Any`, for downcasting to a concrete
+    /// backend-specific surface type.
+    fn as_any(&self) -> &dyn Any;
 }
 
 /// A renderer that will be used to draw to windows.
@@ -48,10 +52,7 @@ pub trait IRenderer: Any {
         Self: Sized;
 
     /// Create the renderer **and** the required GPU API
-    fn init(
-        info: Self::InitInfo,
-        event_loop: &ActiveEventLoop,
-    ) -> AResult<(Rc<Self>, GpuApi)>
+    fn init(info: Self::InitInfo, event_loop: &ActiveEventLoop) -> AResult<(Rc<Self>, GpuApi)>
     where
         Self: Sized;
 
@@ -62,10 +63,20 @@ pub trait IRenderer: Any {
         size: PhysicalSize<u32>,
     ) -> AResult<Box<dyn ISurface>>;
 
-    /// Submit the rendering queue to render things like shadows and secondary
-    /// cameras, and create an object to render the primary camera if one
+    /// Create the instructions to render things like shadows and secondary
+    /// cameras, and create instructions to render the primary camera if one
     /// exists.
-    fn render_level(&self, rendering_queue: RenderingQueue) -> AResult<Option<WindowInstructions>>;
+    fn render_level(
+        &self,
+        rendering_queue: &RenderingQueue,
+    ) -> AResult<(Box<dyn Any>, Option<BoxedInstructions>)>;
+
+    /// Submit a batch of [`Level`](crate::core::level::Level) render
+    /// instructions produced by [`render_level`](IRenderer::render_level).
+    fn submit_level_instructions(
+        &self,
+        instructions: &mut dyn Iterator<Item = Box<dyn Any>>,
+    ) -> AResult<()>;
 }
 
 /// Instructions for drawing to a window, produced by
@@ -77,4 +88,4 @@ pub trait WindowRenderInstructions: Any {
 }
 
 /// An ali
-pub type WindowInstructions = Box<dyn WindowRenderInstructions>;
+pub type BoxedInstructions = Box<dyn WindowRenderInstructions>;

@@ -67,6 +67,7 @@
 pub use glamx;
 pub use rapier3d;
 pub use tracing;
+#[cfg(feature = "gpu-vulkan")]
 pub use vulkano;
 pub use winit;
 

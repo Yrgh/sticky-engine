@@ -75,7 +75,6 @@ pub struct Level {
     component_columns: FrozenMap<TypeId, Box<dyn IColumn>, BuildTypeIdHasher>,
     top_level: RefCell<Vec<DynComponentId>>,
 
-    #[expect(unused)]
     rendering_queue: RefCell<RenderingQueue>,
 
     window: Cell<Option<WindowId>>,
@@ -101,6 +100,10 @@ impl Level {
 
     pub(crate) fn unset_window(&self) {
         self.window.set(None);
+    }
+
+    pub(crate) fn get_rendering_queue(&self) -> Ref<'_, RenderingQueue> {
+        self.rendering_queue.borrow()
     }
 
     /// Sets whether this `Level` is active or not.
