@@ -4,22 +4,29 @@
 //! non-blocking interior mutability, meaning the [`World`] cannot be shared across threads. The
 //! [`World`] contains all [`Level`]s, [`IWindow`]s, and Components.
 use std::{
-    cell::{Cell, OnceCell, Ref, RefCell, RefMut, UnsafeCell},
+    cell::{Cell, Ref, RefCell, RefMut, UnsafeCell},
     collections::VecDeque,
-    sync::Arc,
+    rc::Rc,
     time::Duration,
 };
 
 use anyhow::Result as AResult;
 
-use winit::{event::WindowEvent, event_loop::ActiveEventLoop, window::WindowAttributes};
+use thiserror::Error;
+
+use winit::{
+    event::WindowEvent,
+    event_loop::ActiveEventLoop,
+    window::{Window, WindowAttributes},
+};
 
 use crate::core::{
+    gpu_api::{GpuApi, IGpuApi, IRenderer},
     level::{Level, LevelIndex, LevelIndexOwned},
     util::gen_slot_vec::{RefCellGenSlotVec, SlotIndex},
-    vk::VkContext,
     window::{IWindowBoth, RootWindow, WindowId, WindowIdOwned},
 };
+
 use crate::core::{util::sentinel::SentinelMaxU32, window::IWindow};
 
 enum WorldAction {
@@ -50,63 +57,45 @@ pub struct World {
 
     active_event_loop: Cell<*const ActiveEventLoop>,
 
-    vk_ctx: OnceCell<Arc<VkContext>>,
+    gpu_api: Option<GpuApi>,
+    renderer: Option<Rc<dyn IRenderer>>,
 }
 
 impl World {
-    pub(crate) fn new_empty() -> Self {
-        Self {
-            levels: Box::new(boxcar::Vec::new()),
-            level_free_head: Cell::new(SentinelMaxU32::NONE),
-
-            action_queue: RefCell::new(VecDeque::new()),
-
-            stable_rate: Cell::new(Duration::from_millis(15)),
-            min_idle_delay: Cell::new(Duration::from_millis(15)),
-
-            windows: RefCellGenSlotVec::new(),
-
-            main_window: Cell::new(None),
-            main_level: Cell::new(None),
-
-            active_event_loop: Cell::new(std::ptr::null()),
-
-            vk_ctx: OnceCell::new(),
-        }
-    }
-    pub(crate) fn make_headless(&self) {
-        let lidxo = self.create_level();
-        let lidx = lidxo.handle();
-        lidxo.leak();
-
-        self.main_level.set(Some(lidx));
-
-        self.stable_rate.set(Duration::from_millis(15));
-        self.min_idle_delay.set(Duration::from_millis(15));
-    }
-}
-
-impl World {
-    /// If the Vulkan context is uninitialized, tries to initialize it.
-    ///
-    /// This is done automatically if the main loop is run with `headless`d set
-    /// to `false`.
-    pub fn init_vk(&self, init_opts: super::vk::InitializationOptions) -> AResult<()> {
-        if self.vk_ctx.get().is_none() {
-            let vk_ctx = Arc::new(VkContext::new(init_opts)?);
-
-            // No meaningful error
-            let _ = self.vk_ctx.set(vk_ctx);
-        }
-
-        Ok(())
+    /// Returns the renderer, if one is set.
+    pub fn get_renderer(&self) -> Option<&Rc<dyn IRenderer>> {
+        self.renderer.as_ref()
     }
 
-    /// Returns the Vulkan context if it has been initialized.
-    ///
-    /// See [`init_vk`](Self::init_vk).
-    pub fn get_vk(&self) -> Option<Arc<VkContext>> {
-        self.vk_ctx.get().cloned()
+    /// Returns the renderer, downcasted to a specific type, panicking if it is not found or of the wrong type.
+    pub fn get_renderer_as<R: IRenderer>(&self) -> Rc<R> {
+        let Some(renderer) = &self.renderer else {
+            panic!("no renderer set");
+        };
+
+        let Ok(renderer) = Rc::downcast(renderer.clone()) else {
+            panic!("renderer is of the wrong type");
+        };
+
+        renderer
+    }
+
+    /// Returns the GPU API, if one is set.
+    pub fn get_gpu_api(&self) -> Option<&Rc<dyn IGpuApi>> {
+        self.gpu_api.as_ref()
+    }
+
+    /// Returns the GPU API, downcasted to a specific type, panicking if it is not found or of the wrong type.
+    pub fn get_gpu_api_as<R: IGpuApi>(&self) -> Rc<R> {
+        let Some(gpu_api) = &self.gpu_api else {
+            panic!("no GPU API set");
+        };
+
+        let Ok(gpu_api) = Rc::downcast(gpu_api.clone()) else {
+            panic!("GPU API is of the wrong type");
+        };
+
+        gpu_api
     }
 }
 
@@ -223,11 +212,6 @@ impl World {
     pub fn main_level(&self) -> Option<&Level> {
         self.get_level(self.main_level.get()?)
     }
-
-    pub(crate) fn set_main_window(&self, id: WindowId, level: LevelIndex) {
-        self.main_window.set(Some(id));
-        self.main_level.set(Some(level));
-    }
 }
 
 impl World {
@@ -312,6 +296,20 @@ impl World {
     }
 }
 
+#[derive(Error, Debug)]
+/// Error returned by [`World::create_root_window`].
+pub enum CreateRootWindowError {
+    /// Returned if the function was called outside the event loop (somehow).
+    #[error("cannot create windows outside of the event loop")]
+    OutsideEventLoop,
+    /// Returned if [`winit`] had an error.
+    #[error("winit error: {0}")]
+    WinitOsError(#[from] winit::error::OsError),
+    /// Returned if the [`World`] was not created with a renderer.
+    #[error("no renderer set")]
+    NoRenderer,
+}
+
 impl World {
     /// Create a new [`RootWindow`] from the given attributes.
     ///
@@ -321,28 +319,29 @@ impl World {
     /// # Borrows
     ///
     /// Indirectly mutably borrows the destination window's storage slot.
-    pub fn create_root_window(&self, attrs: WindowAttributes) -> AResult<WindowIdOwned> {
-        let ael = self.active_event_loop().ok_or_else(|| {
-            anyhow::anyhow!("no active event loop; create windows from within the main loop")
-        })?;
-        let window = ael
-            .create_window(attrs)
-            .map_err(|e| anyhow::anyhow!("failed to create window: {e}"))?;
+    pub fn create_root_window(
+        &self,
+        attrs: WindowAttributes,
+    ) -> Result<WindowIdOwned, CreateRootWindowError> {
+        let ael = self
+            .active_event_loop()
+            .ok_or(CreateRootWindowError::OutsideEventLoop)?;
+        let window = ael.create_window(attrs)?;
 
-        Ok(
-            self.insert_window(self.create_level(), move |id, level, self_| {
-                self_
-                    .get_level(level)
-                    .expect("level just created")
-                    .set_window(id);
-                Box::new(RootWindow::new(
-                    id,
-                    level,
-                    window,
-                    self.get_vk().expect("need Vulkan to create a window"),
-                ))
-            }),
-        )
+        self.insert_window(self.create_level(), move |id, level, self_| {
+            self_
+                .get_level(level)
+                .expect("level just created")
+                .set_window(id);
+            Ok(Box::new(RootWindow::new(
+                id,
+                level,
+                window,
+                self.renderer
+                    .clone()
+                    .ok_or(CreateRootWindowError::NoRenderer)?,
+            )))
+        })
     }
 
     /// Inserts a built window into the [`World`].
@@ -350,17 +349,17 @@ impl World {
     /// # Borrows
     ///
     /// Mutably borrows the destination window's storage slot.
-    fn insert_window(
+    fn insert_window<E>(
         &self,
         level: LevelIndexOwned,
-        build: impl FnOnce(WindowId, LevelIndex, &Self) -> Box<dyn IWindowBoth>,
-    ) -> WindowIdOwned {
+        build: impl FnOnce(WindowId, LevelIndex, &Self) -> Result<Box<dyn IWindowBoth>, E>,
+    ) -> Result<WindowIdOwned, E> {
         let handle = level.handle();
         let slot = self.windows.reserve();
         let id = WindowId { slot };
-        let window = build(id, handle, self);
+        let window = build(id, handle, self)?;
         self.windows.fill(slot, (level, window));
-        WindowIdOwned { slot }
+        Ok(WindowIdOwned { slot })
     }
 
     /// Returns an [`IWindow`] by its ID.
@@ -559,5 +558,180 @@ impl World {
             .unset_window();
 
         Ok(old_level)
+    }
+}
+
+impl World {
+    /// Create a new builder.
+    pub fn builder() -> WorldBuilder {
+        WorldBuilder {
+            main_mode: MainMode::None,
+            gpu_create_mode: GpuCreateMode::Dont,
+
+            stable_rate: Duration::from_millis(15),
+            min_idle_delay: Duration::from_millis(15),
+        }
+    }
+
+    pub(crate) fn complete_init(&mut self, builder: &mut WorldBuilder) -> AResult<()> {
+        if let GpuCreateMode::Renderer(f) = &mut builder.gpu_create_mode {
+            let f = std::mem::replace(f, Box::new(|_| panic!("complete_init called twice")));
+            let (renderer, gpu_api) = f(self
+                .active_event_loop()
+                .expect("complete_init called outside of event loop"))?;
+
+            self.renderer = Some(renderer);
+            self.gpu_api = Some(gpu_api);
+        }
+
+        if let MainMode::Window = &builder.main_mode {
+            let window = self.create_root_window(Window::default_attributes())?;
+            self.main_window.set(Some(window.handle()));
+            window.leak();
+        }
+
+        Ok(())
+    }
+}
+
+pub(crate) enum MainMode {
+    None,
+    OnlyLevel,
+    Window,
+}
+
+pub(crate) type RendererCreateFn =
+    dyn FnOnce(&ActiveEventLoop) -> AResult<(Rc<dyn IRenderer>, GpuApi)>;
+
+pub(crate) enum GpuCreateMode {
+    Dont,
+    ApiOnly(GpuApi),
+    Renderer(Box<RendererCreateFn>),
+}
+
+/// Builder for a [`World`].
+pub struct WorldBuilder {
+    pub(crate) main_mode: MainMode,
+    pub(crate) gpu_create_mode: GpuCreateMode,
+
+    stable_rate: Duration,
+    min_idle_delay: Duration,
+}
+
+impl WorldBuilder {
+    /// Add a main level tied to no windows.
+    pub fn headless(&mut self) -> &mut Self {
+        assert!(
+            matches!(self.main_mode, MainMode::None),
+            "headless applied twice"
+        );
+
+        self.main_mode = MainMode::OnlyLevel;
+
+        self
+    }
+
+    /// Add a main window that owns the main [`Level`].
+    pub fn with_window(&mut self) -> &mut Self {
+        assert!(
+            matches!(self.main_mode, MainMode::None),
+            "with_window applied twice"
+        );
+
+        self.main_mode = MainMode::Window;
+
+        self
+    }
+
+    /// Set the renderer.
+    ///
+    /// Note: this also sets the GPU API.
+    pub fn with_renderer<R: IRenderer>(&mut self, info: R::InitInfo) -> &mut Self {
+        assert!(
+            matches!(self.gpu_create_mode, GpuCreateMode::Dont),
+            "GPU API already set"
+        );
+
+        self.gpu_create_mode = GpuCreateMode::Renderer(Box::new(move |ael| {
+            R::init(info, ael).map(|(r, g)| -> (Rc<dyn IRenderer>, GpuApi) { (r, g) })
+        }));
+
+        self
+    }
+
+    /// Set the GPU API.
+    ///
+    /// Note: this does not set the renderer.
+    pub fn with_gpu_api(&mut self, gpu_api: Rc<impl IGpuApi>) -> &mut Self {
+        assert!(
+            matches!(self.gpu_create_mode, GpuCreateMode::Dont),
+            "GPU API already set"
+        );
+
+        self.gpu_create_mode = GpuCreateMode::ApiOnly(gpu_api);
+
+        self
+    }
+
+    /// Set the stable tick rate.
+    ///
+    /// Defaults to 15ms
+    pub fn with_stable_tick_rate(&mut self, stable_rate: Duration) -> &mut Self {
+        self.stable_rate = stable_rate;
+        self
+    }
+
+    /// Set the minimum delay between idle events.
+    ///
+    /// Defaults to 15ms
+    pub fn with_min_idle_delay(&mut self, min_idle_delay: Duration) -> &mut Self {
+        self.min_idle_delay = min_idle_delay;
+        self
+    }
+
+    pub(crate) fn finish_ish(&self) -> World {
+        let world = World {
+            levels: Box::new(boxcar::Vec::new()),
+            level_free_head: Cell::new(SentinelMaxU32::default()),
+
+            action_queue: RefCell::new(VecDeque::new()),
+
+            stable_rate: Cell::new(self.stable_rate),
+            min_idle_delay: Cell::new(self.min_idle_delay),
+
+            windows: RefCellGenSlotVec::new(),
+
+            main_level: Cell::new(None),
+            main_window: Cell::new(None),
+
+            active_event_loop: Cell::new(std::ptr::null()),
+
+            gpu_api: match &self.gpu_create_mode {
+                GpuCreateMode::ApiOnly(api) => Some(api.clone()),
+                _ => None,
+            },
+
+            renderer: None,
+        };
+
+        if let MainMode::OnlyLevel = self.main_mode {
+            let lidxo = world.create_level();
+            world.main_level.set(Some(lidxo.handle()));
+            lidxo.leak();
+        }
+
+        world
+    }
+
+    /// Builds the [`World`], with caveats.
+    ///
+    /// Certain features of the [`World`] will not work if used outside the main
+    /// loop. These include windows and the renderer. If the builder provides
+    /// either of those, they will do nothing.
+    ///
+    /// If you are writing tests, this is a better option, but it is highly
+    /// recommended to run the full engine.
+    pub fn build(self) -> World {
+        self.finish_ish()
     }
 }

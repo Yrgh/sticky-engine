@@ -14,11 +14,10 @@ pub mod level;
 pub mod main_loop;
 pub mod math;
 pub mod relations;
-pub mod renderer;
+pub mod rendering;
 pub mod task;
 pub mod trans;
 pub mod util;
-pub mod vk;
 pub mod window;
 pub mod world;
 

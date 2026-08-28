@@ -81,14 +81,14 @@ impl STrans3 for CTop {
 }
 
 fn main() {
+    let mut builder = World::builder();
+    builder.with_window();
+
     unsafe {
-        run_main_loop(
-            |world| {
-                let main_level = world.main_level().expect("main level");
-                main_level.spawn_top_level::<CTop>(world, ());
-            },
-            false,
-        )
+        run_main_loop(builder, |world| {
+            let main_level = world.main_level().expect("main level");
+            main_level.spawn_top_level::<CTop>(world, ());
+        })
     }
     .expect("main loop failed");
 }

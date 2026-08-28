@@ -8,24 +8,23 @@
 
 use std::{
     any::Any,
-    collections::{HashMap, VecDeque},
-    sync::{Arc, OnceLock},
+    sync::OnceLock,
     time::{Duration, Instant},
 };
 
-use anyhow::{Result as AResult, bail};
-use vulkano::{command_buffer::PrimaryCommandBufferAbstract, sync::GpuFuture};
+use anyhow::Result as AResult;
 use winit::{
     application::ApplicationHandler,
-    dpi::PhysicalSize,
     event::WindowEvent,
     event_loop::{ActiveEventLoop, EventLoop},
-    window::WindowAttributes,
 };
 
 use futures::channel::{mpsc, oneshot};
 
-use crate::core::{component::ISlotId, level::LevelIndex, world::World};
+use crate::core::{
+    component::ISlotId,
+    world::{World, WorldBuilder},
+};
 
 pub(crate) type Abstract = Box<dyn Any + Send + Sync>;
 type InitFn = Box<dyn FnOnce(&World) + 'static>;
@@ -49,9 +48,8 @@ struct MainLoop {
     jobs_sync: std::sync::mpsc::Receiver<MainJob>,
 
     world: World,
-
+    world_builder: WorldBuilder,
     init_fn: Option<InitFn>,
-    headless: bool,
 
     stable_accumulator: Instant,
 
@@ -89,106 +87,10 @@ impl MainLoop {
         false
     }
 
-    fn render_idle(&mut self) -> AResult<()> {
-        // Collect things to render
+    fn render_idle(&mut self) {
+        let _span = tracing::debug_span!("engine_render").entered();
 
-        let vk_ctx = self.world.get_vk().expect("vulkan is not initialized");
-
-        let mut render_tasks = self
-            .world
-            .iter_levels()
-            .filter(|l| l.is_active())
-            .try_fold(Vec::new(), |mut acc, level| -> AResult<_> {
-                let rq = level.update_rendering_queue();
-
-                let deps = rq.search_dependencies();
-                let (idle_commands, prq) = rq.build(vk_ctx.clone())?;
-
-                acc.push((level.id(), deps, idle_commands, prq));
-                Ok(acc)
-            })?;
-
-        // Kahn's
-        {
-            let n = render_tasks.len();
-            let mut in_degree = HashMap::with_capacity(n);
-            let mut dependents: HashMap<LevelIndex, Vec<LevelIndex>> = HashMap::with_capacity(n);
-
-            for (level, dependencies, _, _) in &render_tasks {
-                in_degree.insert(*level, dependencies.len());
-                for j in dependencies {
-                    dependents.entry(*j).or_default().push(*level);
-                }
-            }
-
-            let mut queue = VecDeque::from_iter(
-                in_degree
-                    .iter()
-                    .filter_map(|(l, d)| (*d == 0).then_some(*l)),
-            );
-
-            let mut order = Vec::with_capacity(n);
-
-            while let Some(level) = queue.pop_front() {
-                order.push(level);
-
-                for dependent in dependents.get(&level).into_iter().flatten() {
-                    let Some(indeg) = in_degree.get_mut(dependent) else {
-                        continue;
-                    };
-
-                    *indeg -= 1;
-                    if *indeg == 0 {
-                        queue.push_back(*dependent);
-                    }
-                }
-            }
-
-            if order.len() != n {
-                bail!("cycle dependency detected between levels");
-            }
-
-            render_tasks.sort_by_cached_key(|(lidx, _, _, _)| {
-                order
-                    .iter()
-                    .position(|lidx2| lidx2 == lidx)
-                    .unwrap_or(usize::MAX)
-            });
-        }
-
-        let mut prqs = HashMap::new();
-
-        let queue = vk_ctx.queues[0].clone();
-
-        render_tasks
-            .into_iter()
-            .try_fold(
-                vulkano::sync::now(vk_ctx.device.clone()).boxed_send_sync(),
-                |acc, (lidx, _deps, cb, prq)| -> AResult<_> {
-                    let exec = cb.execute_after(acc, queue.clone())?;
-
-                    Ok(if let Some(mut prq) = prq {
-                        let fence = Arc::new(exec.then_signal_fence());
-                        prq.exec_after = Some(fence.clone());
-                        prqs.insert(lidx, prq);
-                        fence.boxed_send_sync()
-                    } else {
-                        exec.boxed_send_sync()
-                    })
-                },
-            )?
-            .flush()?;
-
-        for (_id, mut window) in self.world.iter_windows_mut_int() {
-            let lidx = window.level();
-            window.set_prq(prqs.remove(&lidx).expect("window missing a prq"));
-
-            if let Some(os) = window.as_os() {
-                os.request_redraw();
-            }
-        }
-
-        Ok(())
+        todo!()
     }
 
     fn physics_handling(&mut self) -> bool {
@@ -245,43 +147,14 @@ impl ApplicationHandler for MainLoop {
 
         if cause == winit::event::StartCause::Init {
             let _span = tracing::info_span!("engine_init").entered();
-            // First init code goes here
 
-            // Create main window
-            if !self.headless {
-                if let Err(e) = self.world.init_vk(super::vk::InitializationOptions {
-                    event_loop: Some(event_loop),
-                }) {
-                    tracing::error!("failed to initialize vulkano: {e}");
-                    event_loop.exit();
-
+            match self.world.complete_init(&mut self.world_builder) {
+                Ok(()) => {}
+                Err(e) => {
+                    tracing::error!("failed to initialize the engine: {e}");
                     self.world.unset_active_event_loop();
+                    event_loop.exit();
                     return;
-                }
-
-                // TODO: User inputs these
-                let attrs = WindowAttributes::default()
-                    .with_title("Sticky Engine")
-                    .with_inner_size(PhysicalSize::new(1280, 720));
-
-                match self.world.create_root_window(attrs) {
-                    Ok(owned) => {
-                        let id = owned.handle();
-                        let level = self
-                            .world
-                            .get_window(id)
-                            .expect("window was just created")
-                            .level();
-                        self.world.set_main_window(id, level);
-                        owned.leak();
-                    }
-                    Err(e) => {
-                        tracing::error!("failed to create main window: {e}");
-                        event_loop.exit();
-
-                        self.world.unset_active_event_loop();
-                        return;
-                    }
                 }
             }
 
@@ -320,9 +193,10 @@ impl ApplicationHandler for MainLoop {
                     drop(window);
                     self.world.handle_window_event(id, &event);
                 }
-                WindowEvent::RedrawRequested => {
-                    window.draw();
-                }
+                WindowEvent::RedrawRequested => match window.draw() {
+                    Ok(()) => {}
+                    Err(e) => tracing::error!(window_id = ?id, "failed to draw to window: {e}"),
+                },
                 WindowEvent::Resized(new_size) => {
                     window.on_resize(&self.world, new_size);
                 }
@@ -347,8 +221,8 @@ impl ApplicationHandler for MainLoop {
 
         // Release any present fences the GPU has finished with, both before and
         // after doing frame work this cycle.
-        if let Some(vk) = self.world.get_vk() {
-            vk.cleanup_in_flight_futures();
+        if let Some(gpu_api) = self.world.get_gpu_api() {
+            gpu_api.cleanup_in_flight();
         }
 
         unsafe { self.world.flush_actions() };
@@ -374,8 +248,8 @@ impl ApplicationHandler for MainLoop {
             }
 
             // Only do rendering work when it is at all possible.
-            if self.world.get_vk().is_some() {
-                self.render_idle().expect("failed to render levels");
+            if self.world.get_renderer().is_some() {
+                self.render_idle();
             }
         }
 
@@ -385,14 +259,16 @@ impl ApplicationHandler for MainLoop {
             return;
         }
 
-        if let Some(vk) = self.world.get_vk() {
-            vk.cleanup_in_flight_futures();
+        if let Some(gpu_api) = self.world.get_gpu_api() {
+            gpu_api.cleanup_in_flight();
         }
 
         self.world.unset_active_event_loop();
     }
 
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+        let _span = tracing::debug_span!("application_resumed").entered();
+
         unsafe { self.world.set_active_event_loop(event_loop) };
 
         for (_id, mut window) in self.world.iter_windows_mut_int() {
@@ -417,12 +293,7 @@ const MAIN_QUEUE_ASYNC_LEN: usize = 8;
 
 /// Entry point for the engine.
 ///
-/// `init_fn` is called when the main loop has initialized.
-///
-/// If `headless` is set, a main level will be created, but no main window. It
-/// is still possible to open other windows later. Additionally, you will have
-/// to manually request [`vulkano`] to be initialized. If `headless` is false, a
-/// main window will be created that owns the main level.
+/// `init_fn` is called when the main loop has initialized fully.
 ///
 /// The main loop is what controls the whole engine, from the [`World`] to the
 /// renderer to all stable-tick logic. The [`World`], is not shareable across
@@ -436,7 +307,10 @@ const MAIN_QUEUE_ASYNC_LEN: usize = 8;
 ///
 /// This function must be called exactly once on the main thread. The main loop
 /// provides a [`tokio`] runtime, so do not use `#[tokio::main]`.
-pub unsafe fn run_main_loop(init_fn: impl FnOnce(&World) + 'static, headless: bool) -> AResult<()> {
+pub unsafe fn run_main_loop(
+    world_builder: WorldBuilder,
+    init_fn: impl FnOnce(&World) + 'static,
+) -> AResult<()> {
     if cfg!(test) {
         panic!("Cannot run the main loop during a test. Write an example");
     }
@@ -444,20 +318,14 @@ pub unsafe fn run_main_loop(init_fn: impl FnOnce(&World) + 'static, headless: bo
     let (job_async_tx, job_async_rx) = mpsc::channel(MAIN_QUEUE_ASYNC_LEN);
     let (job_sync_tx, job_sync_rx) = std::sync::mpsc::channel();
 
-    let world = World::new_empty();
-
-    if headless {
-        world.make_headless();
-    }
-
     let mut main_loop = MainLoop {
         jobs_async: job_async_rx,
         jobs_sync: job_sync_rx,
 
-        world,
+        world: world_builder.finish_ish(),
+        world_builder,
 
         init_fn: Some(Box::new(init_fn)),
-        headless,
 
         stable_accumulator: Instant::now(),
 
@@ -504,7 +372,7 @@ pub(crate) async fn queue_async(job: MainJob) -> Result<(), MainClosedError> {
 }
 
 /// Queues the main loop to quit.
-/// 
+///
 /// If you can use `.await`, use [`queue_quit_async`] instead.
 pub fn queue_quit() -> Result<(), MainClosedError> {
     queue(MainJob::Quit)

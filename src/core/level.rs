@@ -15,7 +15,7 @@ use crate::core::{
     ComponentGetError, ComponentGetMutError,
     component::{ComponentId, DynComponentId, IComponent, ISlotId},
     relations::{BuildTypeIdHasher, RELATIONS},
-    renderer::RenderingQueue,
+    rendering::RenderingQueue,
     util::gen_slot_vec::{RefCellGenSlotVec, SlotIndex},
     window::WindowId,
     world::World,
@@ -75,6 +75,7 @@ pub struct Level {
     component_columns: FrozenMap<TypeId, Box<dyn IColumn>, BuildTypeIdHasher>,
     top_level: RefCell<Vec<DynComponentId>>,
 
+    #[expect(unused)]
     rendering_queue: RefCell<RenderingQueue>,
 
     window: Cell<Option<WindowId>>,
@@ -449,18 +450,6 @@ impl Level {
             }
             .map(move |slot| unsafe { D::from_parts(slot, self_id, tyid) })
         })
-    }
-
-    /// Returns a shared handle to this Level's rendering queue.
-    ///
-    /// # Borrows
-    ///
-    /// Immutably borrows the rendering queue until the returned
-    /// [`Ref`] is dropped.
-    pub(crate) fn update_rendering_queue(&self) -> Ref<'_, RenderingQueue> {
-        // TODO: Actually update the rendering queue
-
-        self.rendering_queue.borrow()
     }
 }
 
