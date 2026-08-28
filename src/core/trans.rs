@@ -31,6 +31,8 @@ pub trait STrans3 {
     /// Returns the transform relative to the owning
     /// [`Level`](crate::core::level::Level).
     ///
+    /// You shouldn't override this.
+    ///
     /// # Borrows
     ///
     /// Can recursively borrow ancestors implementing [`STrans3`], depending on
@@ -39,6 +41,8 @@ pub trait STrans3 {
         self.get_provider().get_global_trans(world)
     }
     /// Returns the transform relative to the parent.
+    ///
+    /// You shouldn't override this.
     ///
     /// # Borrows
     ///
@@ -49,6 +53,8 @@ pub trait STrans3 {
     }
     /// Sets the transform relative to the owning
     /// [`Level`](crate::core::level::Level).
+    ///
+    /// You shouldn't override this.
     ///
     /// # Borrows
     ///
@@ -67,6 +73,8 @@ pub trait STrans3 {
         }
     }
     /// Sets the transform relative to the parent.
+    ///
+    /// You shouldn't override this.
     ///
     /// # Borrows
     ///
@@ -161,8 +169,11 @@ impl ITrans3Provider for Trans3ProviderRelative {
     fn get_global_trans(&self, world: &World) -> Trans3 {
         if let Some(global_trans) = self.global_cached_trans.get() {
             global_trans
-        } else if let Some(parent_id) = &self.parent {
-            let parent_trans = parent_id.get(world).expect("parent removed").get_global_trans(world);
+        } else if let Some(parent) = &self.parent {
+            let parent_trans = parent
+                .get(world)
+                .expect("parent removed")
+                .get_global_trans(world);
             let global = parent_trans * self.local_trans;
             self.global_cached_trans.set(Some(global));
             global
@@ -181,8 +192,11 @@ impl ITrans3Provider for Trans3ProviderRelative {
     ///
     /// Recursively borrows ancestors implementing [`STrans3`].
     fn set_global_trans(&mut self, world: &World, trans: Trans3) {
-        if let Some(parent_id) = &self.parent {
-            let parent_trans = parent_id.get(world).expect("parent removed").get_global_trans(world);
+        if let Some(parent) = &self.parent {
+            let parent_trans = parent
+                .get(world)
+                .expect("parent removed")
+                .get_global_trans(world);
             self.local_trans = parent_trans.inv_mul(&trans);
         } else {
             // local = global because no parent
@@ -239,8 +253,11 @@ impl ITrans3Provider for Trans3ProviderTop {
     fn get_local_trans(&self, world: &World) -> Trans3 {
         if let Some(local_trans) = self.local_cached_trans.get() {
             local_trans
-        } else if let Some(parent_id) = &self.parent {
-            let parent_trans = parent_id.get(world).expect("parent removed").get_global_trans(world);
+        } else if let Some(parent) = &self.parent {
+            let parent_trans = parent
+                .get(world)
+                .expect("parent removed")
+                .get_global_trans(world);
             let local = parent_trans.inv_mul(&self.global_trans);
             self.local_cached_trans.set(Some(local));
             local
@@ -260,8 +277,11 @@ impl ITrans3Provider for Trans3ProviderTop {
     ///
     /// Recursively borrows ancestors implementing [`STrans3`].
     fn set_local_trans(&mut self, world: &World, trans: Trans3) {
-        if let Some(parent_id) = &self.parent {
-            let parent_trans = parent_id.get(world).expect("parent removed").get_global_trans(world);
+        if let Some(parent) = &self.parent {
+            let parent_trans = parent
+                .get(world)
+                .expect("parent removed")
+                .get_global_trans(world);
             self.global_trans = parent_trans * trans;
         } else {
             // local = global because no parent

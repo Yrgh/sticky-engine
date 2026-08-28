@@ -14,9 +14,9 @@ Unless a built-in Component/Slot touches a macro or is used internally by the en
 
 ## Conventions
 
-- Edition 2024. The library crate has `#![deny(clippy::unwrap_used, clippy::expect_fun_call, clippy::todo, missing_docs)]` — never use `unwrap()`/`expect()` in library code, and document all public items.
+- Edition 2024. The library crate has `#![deny(clippy::unwrap_used, clippy::expect_fun_call, clippy::todo, missing_docs)]` — never use `unwrap()`, avoid `expect()` in library code, and document all public items.
 - The `World` is `!Send + !Sync` (interior mutability via `RefCell`/`Cell`); interact with it from the main loop or through `task::join_main`.
-- Use `log!` (`err:`, `wrn:`, `dbg:`) for logging instead of `println!`/`eprintln!` except in examples.
+- Use `tracing` features for logging and spans.
 
 # Decision-making
 

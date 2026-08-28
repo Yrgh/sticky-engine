@@ -10,21 +10,21 @@
 //! [`World::create_root_window`], and destroy them with
 //! [`World::destroy_window`].
 
-use std::{any::Any, cell::Cell, sync::Arc};
+use std::{any::Any, cell::Cell, sync::Arc, time::Duration};
 
 use smallvec::SmallVec;
 use vulkano::{
     image::Image,
-    swapchain::{Surface, Swapchain},
+    swapchain::{Surface, Swapchain, SwapchainAcquireFuture, acquire_next_image},
 };
 use winit::{dpi::PhysicalSize, event::WindowEvent, window::Window as OsWindow};
 
-use crate::{
-    core::{
-        level::LevelIndex, renderer::PrimaryRenderingQueue, task::spawn, vk::VkContext,
-        world::World,
-    },
-    log,
+use crate::core::{
+    level::LevelIndex,
+    renderer::{FinalPresentFuture, PrimaryRenderingQueue},
+    util::gen_slot_vec::SlotIndex,
+    vk::VkContext,
+    world::World,
 };
 
 mod private {
@@ -39,7 +39,9 @@ pub use private::Sealed;
 /// This handle is lightweight and cheap to copy. It does **not** keep the
 /// window alive; use [`WindowIdOwned`] for that.
 #[derive(Clone, Copy, Hash, PartialEq, Eq, Debug)]
-pub struct WindowId(pub(crate) u32, pub(crate) u32);
+pub struct WindowId {
+    pub(crate) slot: SlotIndex,
+}
 
 /// Singly-owning handle to an [`IWindow`].
 ///
@@ -47,27 +49,32 @@ pub struct WindowId(pub(crate) u32, pub(crate) u32);
 /// [`World::destroy_window`]. Dropping this handle without destroying or
 /// leaking the window logs an error. Call [`leak`](Self::leak) to keep the
 /// window alive until the [`World`] is dropped.
-pub struct WindowIdOwned(pub(crate) u32, pub(crate) u32);
+pub struct WindowIdOwned {
+    pub(crate) slot: SlotIndex,
+}
 
 impl WindowIdOwned {
     /// Returns a non-owning copy of this handle.
     pub fn handle(&self) -> WindowId {
-        WindowId(self.0, self.1)
+        WindowId { slot: self.slot }
     }
 
     /// Prevents this handle from destroying the window when dropped.
     ///
     /// The window will live until the [`World`] is dropped.
     pub fn leak(mut self) {
-        self.0 = u32::MAX;
-        self.1 = u32::MAX;
+        self.slot = SlotIndex::invalid();
     }
 }
 
 impl Drop for WindowIdOwned {
     fn drop(&mut self) {
-        if self.0 != u32::MAX && self.1 != u32::MAX {
-            log!(err: "Leaked window {:?}", self.handle())
+        if self.slot != SlotIndex::invalid() {
+            tracing::warn!(
+                handle.slot = ?self.slot,
+                "a WindowIdOwned was dropped without manually being leaked, preventing the Window \
+                from being removed until the World is destroyed"
+            );
         }
     }
 }
@@ -95,7 +102,18 @@ pub(crate) trait IWindowInt: Any {
 
     fn set_prq(&mut self, prq: PrimaryRenderingQueue);
 
+    /// Attempts a non-blocking acquisition of the next swapchain image.
+    ///
+    /// Returns `true` if an image is available (or was already acquired, in
+    /// which case this is a no-op) and is now staged for the next
+    /// [`draw`](Self::draw). Returns `false` if no image is currently available
+    /// and none was staged; in that case no primary rendering should happen.
+    fn try_acquire_swapchain(&mut self) -> bool;
+
+    /// Signals that 
     fn draw(&mut self);
+
+    fn switch_level(&mut self, level: LevelIndex);
 }
 
 /// Base trait for all windows.
@@ -172,6 +190,24 @@ pub struct RootWindow {
     vk_ctx: Arc<VkContext>,
     surface: Option<RootWindowSurface>,
     prq: Option<PrimaryRenderingQueue>,
+
+    /// A staged swapchain acquisition: the image index and the future marking when the image
+    /// is available. Only one frame is in flight per window, so at most one acquisition is
+    /// staged at a time.
+    acquired: Option<AcquiredSlot>,
+    /// Per swapchain image index, the most recent present fence for that image.
+    ///
+    /// The next frame rendered to the same image joins onto its entry so it never renders into
+    /// an image while the previous present on that image is still in flight. When the swapchain
+    /// changes, these are handed off to the shared [`VkContext`] in-flight list so they are
+    /// cleaned up rather than dropped un-cleaned.
+    last_in_flight: Vec<Option<Arc<FinalPresentFuture>>>,
+}
+
+/// A swapchain image acquired non-blockingly, staged for presentation.
+struct AcquiredSlot {
+    image_index: u32,
+    swap_acq_fut: SwapchainAcquireFuture,
 }
 
 impl RootWindow {
@@ -190,6 +226,8 @@ impl RootWindow {
             vk_ctx,
             surface: None,
             prq: None,
+            acquired: None,
+            last_in_flight: Vec::new(),
         }
     }
 
@@ -234,11 +272,16 @@ impl IWindowInt for RootWindow {
 
     fn suspend(&mut self) {
         self.surface = None;
-        log!(dbg: "suspended");
+        self.acquired = None;
+        // The swapchain is going away; hand the remaining per-image fences off to the shared
+        // in-flight list so they are cleaned up once finished, rather than dropped.
+        self.flush_last_in_flight();
     }
 
     fn resume(&mut self) {
-        log!(dbg: "resuming... (size: {:?})", self.size.get());
+        // A fresh swapchain is created, so any per-image fences from the previous one are pushed
+        // to the shared in-flight list and forgotten here.
+        self.flush_last_in_flight();
 
         let surface = Surface::from_window(self.vk_ctx.instance.clone(), self.window.clone())
             .expect("failed to create surface");
@@ -253,38 +296,127 @@ impl IWindowInt for RootWindow {
             swapchain,
             swapchain_images: swapchain_images.into(),
         });
-
-        log!(dbg: "resumed");
     }
 
-    fn draw(&mut self) {
-        let Some(surface) = &mut self.surface else {
-            log!(wrn: "no surface during draw");
-            return;
-        };
+    fn try_acquire_swapchain(&mut self) -> bool {
+        if self.acquired.is_some() {
+            return true;
+        }
+
+        // The window will never render while the surface is `None`, so as a
+        // precaution, say it will always be ready to "render".
+        if self.surface.is_none() {
+            return true;
+        }
 
         if self.swapchain_invalid.take() {
-            log!(dbg: "recreating swapchain... (size: {:?})", self.size.get());
+            let Some(surface) = &mut self.surface else {
+                return false;
+            };
+
+            // The swapchain is being rebuilt; hand the old per-image fences off to the shared
+            // in-flight list and forget them here.
+            for fut in self.last_in_flight.drain(..).flatten() {
+                self.vk_ctx.push_in_flight_future(fut);
+            }
 
             let (swapchain, swapchain_images) = self
                 .vk_ctx
                 .recreate_swapchain(surface.swapchain.clone(), self.size.get())
-                .expect("failed to create swapchain");
+                .expect("failed to recreate swapchain");
 
             surface.swapchain = swapchain;
             surface.swapchain_images = swapchain_images.into();
-            log!(dbg: "swapchain created...");
         }
 
-        if let Some(prq) = &self.prq {
-            let fence = prq
-                .build_root(self.vk_ctx.clone(), surface, &self.window)
-                .expect("failed to execute PRQ");
-            spawn(fence);
+        let (image_index, _is_suboptimal, swap_acq_fut) = {
+            let Some(surface) = &self.surface else {
+                return false;
+            };
+            match acquire_next_image(surface.swapchain.clone(), Some(Duration::ZERO)) {
+                Ok((idx, suboptimal, fut)) => (idx, suboptimal, fut),
+                Err(_) => return false,
+            }
+        };
+
+        // TODO: Recreate if suboptimal immediately?
+
+        self.acquired = Some(AcquiredSlot {
+            image_index,
+            swap_acq_fut,
+        });
+        true
+    }
+
+    fn draw(&mut self) {
+        // Try to acquire again, since this is no-op if we already have acquired a valid swapchain.
+        if !self.try_acquire_swapchain() {
+            return;
+        }
+
+        let Some(surface) = &self.surface else {
+            return;
+        };
+
+        let Some(prq) = self.prq.take() else {
+            // No primary rendering queue was staged for this frame.
+            return;
+        };
+
+        let Some(AcquiredSlot {
+            image_index,
+            swap_acq_fut,
+        }) = self.acquired.take()
+        else {
+            return;
+        };
+
+        // The previous present on this image index is joined onto so we never render into it
+        // while it is still in flight.
+        if self.last_in_flight.len() <= image_index as usize {
+            self.last_in_flight.resize(image_index as usize + 1, None);
+        }
+        let prev = self.last_in_flight[image_index as usize].clone();
+
+        match prq.build_root(
+            self.vk_ctx.clone(),
+            surface,
+            &self.window,
+            image_index,
+            swap_acq_fut,
+            prev,
+        ) {
+            Ok(fence) => {
+                // Register a copy with the shared in-flight list (cleaned up, non-blockingly, by
+                // the main loop), and keep one per image index for the next frame to join onto.
+                self.vk_ctx.push_in_flight_future(fence.clone());
+                self.last_in_flight[image_index as usize] = Some(fence);
+                self.window().pre_present_notify();
+            }
+            Err(e) => {
+                tracing::error!(window_id = ?self.id, image_index, "failed to execute PRQ: {e}");
+            }
         }
     }
 
     fn set_prq(&mut self, prq: PrimaryRenderingQueue) {
         self.prq = Some(prq);
+    }
+
+    fn switch_level(&mut self, level: LevelIndex) {
+        self.level = level;
+    }
+}
+
+impl RootWindow {
+    /// Moves every per-image present fence over to the shared [`VkContext`] in-flight list.
+    ///
+    /// This is used when the swapchain is created, recreated, or torn down, so that the old
+    /// fences are cleaned up once the GPU finishes with them rather than being dropped (which
+    /// would block or leak). The per-image list is left empty afterwards.
+    fn flush_last_in_flight(&mut self) {
+        for fut in self.last_in_flight.drain(..).flatten() {
+            self.vk_ctx.push_in_flight_future(fut);
+        }
     }
 }

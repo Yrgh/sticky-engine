@@ -133,11 +133,11 @@ pub fn slot_def(attr: TokenStream1, input: TokenStream1) -> TokenStream1 {
             use super::*;
             use #engine_crate::core::component::*;
             use #engine_crate::core::world::World;
+            use #engine_crate::core::util::gen_slot_vec::SlotIndex;
 
             #[doc = #id_doc]
             #visibility1 struct #slot_id_name {
-                pidx: u32,
-                gidx: u32,
+                slot: SlotIndex,
                 lidx: #engine_crate::core::level::LevelIndex,
                 tyid: ::std::any::TypeId,
                 conv: &'static #engine_crate::core::relations::Convert<dyn super::#slot_name>,
@@ -148,11 +148,10 @@ pub fn slot_def(attr: TokenStream1, input: TokenStream1) -> TokenStream1 {
             {
                 fn from(value: ComponentId<C>) -> Self {
                     let lidx = value.level_id();
-                    let (pidx, gidx, tyid) = value.acquire_parts();
+                    let (slot, tyid) = value.acquire_parts();
 
                     Self {
-                        pidx,
-                        gidx,
+                        slot,
                         lidx,
                         tyid,
                         conv: #engine_crate::core::relations::RELATIONS
@@ -165,8 +164,7 @@ pub fn slot_def(attr: TokenStream1, input: TokenStream1) -> TokenStream1 {
             impl Clone for #slot_id_name {
                 fn clone(&self) -> Self {
                     Self {
-                        pidx: self.pidx,
-                        gidx: self.gidx,
+                        slot: self.slot,
                         lidx: self.lidx,
                         tyid: self.tyid,
                         conv: self.conv,
@@ -178,14 +176,12 @@ pub fn slot_def(attr: TokenStream1, input: TokenStream1) -> TokenStream1 {
                 type TraitObject = dyn super::#slot_name;
 
                 unsafe fn from_parts(
-                    pidx: u32,
-                    gidx: u32,
+                    slot: SlotIndex,
                     lidx: #engine_crate::core::level::LevelIndex,
                     tyid: ::std::any::TypeId,
                 ) -> Self where Self: Sized {
                     Self {
-                        pidx,
-                        gidx,
+                        slot,
                         lidx,
                         tyid,
                         conv: #engine_crate::core::relations::RELATIONS
@@ -198,8 +194,8 @@ pub fn slot_def(attr: TokenStream1, input: TokenStream1) -> TokenStream1 {
                     self.lidx
                 }
 
-                fn acquire_parts(&self) -> (u32, u32, ::std::any::TypeId) {
-                    (self.pidx, self.gidx, self.tyid)
+                fn acquire_parts(&self) -> (SlotIndex, ::std::any::TypeId) {
+                    (self.slot, self.tyid)
                 }
 
                 fn get<'w>(&self, world: &'w #engine_crate::core::world::World)
@@ -209,7 +205,7 @@ pub fn slot_def(attr: TokenStream1, input: TokenStream1) -> TokenStream1 {
                         world
                             .get_level(self.lidx)
                             .ok_or(#engine_crate::core::ComponentGetError::NotFound)?
-                            .acquire_component_internal_dyn(self.tyid, self.pidx, self.gidx)?
+                            .acquire_component_internal_dyn(self.tyid, self.slot)?
                     ))
                 }
 
@@ -220,7 +216,7 @@ pub fn slot_def(attr: TokenStream1, input: TokenStream1) -> TokenStream1 {
                         world
                             .get_level(self.lidx)
                             .ok_or(#engine_crate::core::ComponentGetMutError::NotFound)?
-                            .acquire_component_internal_dyn_mut(self.tyid, self.pidx, self.gidx)?
+                            .acquire_component_internal_dyn_mut(self.tyid, self.slot)?
                     ))
                 }
             }
@@ -232,14 +228,14 @@ pub fn slot_def(attr: TokenStream1, input: TokenStream1) -> TokenStream1 {
             impl From<#slot_id_name> for DynComponentId {
                 fn from(value: #slot_id_name) -> Self {
                     unsafe {
-                        DynComponentId::from_parts(value.pidx, value.gidx, value.lidx, value.tyid)
+                        DynComponentId::from_parts(value.slot, value.lidx, value.tyid)
                     }
                 }
             }
 
             impl ::std::cmp::PartialEq for #slot_id_name {
                 fn eq(&self, other: &Self) -> bool {
-                    self.pidx == other.pidx && self.gidx == other.gidx && self.lidx == other.lidx
+                    self.slot == other.slot && self.lidx == other.lidx
                 }
             }
 
@@ -247,8 +243,7 @@ pub fn slot_def(attr: TokenStream1, input: TokenStream1) -> TokenStream1 {
 
             impl ::std::hash::Hash for #slot_id_name {
                 fn hash<H: ::std::hash::Hasher>(&self, state: &mut H) {
-                    state.write_u32(self.pidx);
-                    state.write_u32(self.gidx);
+                    self.slot.hash(state);
                     self.lidx.hash(state);
                 }
             }
@@ -1138,8 +1133,7 @@ pub fn comp_def(input: TokenStream1) -> TokenStream1 {
                 let name_move_from =
                     syn::Ident::new(&format!("{name}_move_from"), Span2::call_site());
                 let name_get_at = syn::Ident::new(&format!("{name}_get_id_at"), Span2::call_site());
-                let name_get_at_tr =
-                    syn::Ident::new(&format!("{name}_get_at"), Span2::call_site());
+                let name_get_at_tr = syn::Ident::new(&format!("{name}_get_at"), Span2::call_site());
                 let name_get_at_mut_tr =
                     syn::Ident::new(&format!("{name}_get_at_mut"), Span2::call_site());
                 let name_len = syn::Ident::new(&format!("{name}_len"), Span2::call_site());
@@ -1439,8 +1433,7 @@ pub fn comp_def(input: TokenStream1) -> TokenStream1 {
                         spawn_info_ty = Some(tys[3].clone());
                     }
 
-                    let info_ty =
-                        spawn_info_ty.clone().unwrap_or_else(|| parse_quote! { () });
+                    let info_ty = spawn_info_ty.clone().unwrap_or_else(|| parse_quote! { () });
 
                     quote_spanned! { attr_span=>
                         const _: fn(
@@ -1452,7 +1445,8 @@ pub fn comp_def(input: TokenStream1) -> TokenStream1 {
                     }
                 }
                 "destroy" | "post_init" | "pre_phys" | "post_phys" | "idle" => {
-                    let hook_ident = syn::Ident::new(&format!("{attr_ident}_hook"), fn_ident.span());
+                    let hook_ident =
+                        syn::Ident::new(&format!("{attr_ident}_hook"), fn_ident.span());
 
                     let slot = match attr_ident.to_string().as_str() {
                         "destroy" => &mut user_destroy,
@@ -1469,8 +1463,10 @@ pub fn comp_def(input: TokenStream1) -> TokenStream1 {
 
                     trait_hook_items.push(ImplItem::Fn(renamed));
 
-                    let takes_delta =
-                        matches!(attr_ident.to_string().as_str(), "pre_phys" | "post_phys" | "idle");
+                    let takes_delta = matches!(
+                        attr_ident.to_string().as_str(),
+                        "pre_phys" | "post_phys" | "idle"
+                    );
 
                     if takes_delta {
                         quote_spanned! { attr_ident.span()=>
@@ -1532,12 +1528,12 @@ pub fn comp_def(input: TokenStream1) -> TokenStream1 {
                     child.destroy(world);
                     drop(child);
 
-                    let (pidx, gidx, tyid) = ISlotId::acquire_parts(id);
+                    let (slot, tyid) = ISlotId::acquire_parts(id);
                     let lvl = world
                         .get_level(ISlotId::level_id(id))
                         .expect("level destroyed");
 
-                    lvl.remove_component_internal(tyid, pidx, gidx);
+                    lvl.remove_component_internal(tyid, slot);
                 }
 
                 /// (**INTERNAL**) Spawns a new child Component under `parent`, runs its
@@ -1564,8 +1560,12 @@ pub fn comp_def(input: TokenStream1) -> TokenStream1 {
             }
 
             unsafe impl #comp_mod::IComponent for #name {
-                fn parent_id(&self) -> #comp_mod::ComponentParent {
+                fn parent(&self) -> #comp_mod::ComponentParent {
                     self.c_parent.clone()
+                }
+
+                fn self_id(&self) -> DynComponentId {
+                    self.c_self.clone().into()
                 }
 
                 fn children(&self) -> Box<dyn Iterator<Item=DynComponentId>> {
@@ -1599,9 +1599,9 @@ pub fn comp_def(input: TokenStream1) -> TokenStream1 {
                     let lvl = world
                         .get_level(lvl_id)
                         .expect("level destroyed");
-                    let (pidx, gidx, _) = #comp_mod::ISlotId::acquire_parts(&self_id);
+                    let (slot, _) = #comp_mod::ISlotId::acquire_parts(&self_id);
 
-                    lvl.fill_slot_internal(pidx, gidx, self_);
+                    lvl.fill_slot_internal(slot, self_);
 
                     self_id
                 }

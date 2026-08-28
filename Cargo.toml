@@ -11,19 +11,21 @@ categories = ["game-development", "game-engines", "rendering", "rendering::engin
 [workspace]
 members = ["macros"]
 
+[features]
+default = ["gpu-vulkan"]
+gpu-vulkan = ["dep:vulkano"]
+
 [dependencies]
-cpal = "0.18.1"
-gltf = "1.4.1"
 rapier3d = "0.34.0"
-tokio = {version="1.53.1", features=["full"]}
-vulkano = "0.35.2"
+vulkano = {version="0.35.2", optional=true}
 winit = "0.30.13"
 sticky-engine-macros = {path="macros"}
 anyhow = "1.0.104"
 linkme = "0.3.37"
 elsa = "1.11.2"
 boxcar = "0.2.14"
-chrono = "0.4.45"
 glamx = "0.3.0"
 smallvec = "1.15.2"
 thiserror = "2.0.20"
+tracing = "0.1.44"
+futures = "0.3.34"

@@ -1,6 +1,6 @@
 //! Vulkan utilities
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result as AResult, bail};
 
@@ -15,9 +15,11 @@ use vulkano::{
     instance::{Instance, InstanceCreateFlags, InstanceCreateInfo},
     memory::allocator::{MemoryAllocator, StandardMemoryAllocator},
     swapchain::{Surface, Swapchain, SwapchainCreateInfo},
+    sync::GpuFuture,
 };
 use winit::{dpi::PhysicalSize, raw_window_handle::HasDisplayHandle};
 
+use crate::core::renderer::FinalPresentFuture;
 
 /// Initialization options for the Vulkan context.
 pub struct InitializationOptions<'a> {
@@ -40,6 +42,13 @@ pub struct VkContext {
     pub buffer_allocator: Arc<dyn MemoryAllocator>,
     /// The memory allocator for *command buffers*
     pub command_buffer_allocator: Arc<dyn CommandBufferAllocator>,
+    /// Every present fence that is still in flight.
+    ///
+    /// Present fences must never be dropped directly while un-cleaned (dropping would block the
+    /// thread until the GPU finishes). Instead, windows push their final present fence here and the
+    /// main loop periodically calls [`cleanup_in_flight_futures`](Self::cleanup_in_flight_futures),
+    /// which releases any fence whose GPU work has finished and removes it from the list.
+    in_flight_futures: Mutex<Vec<Arc<FinalPresentFuture>>>,
 }
 
 impl VkContext {
@@ -135,7 +144,38 @@ impl VkContext {
             queues,
             buffer_allocator,
             command_buffer_allocator,
+            in_flight_futures: Mutex::new(Vec::new()),
         })
+    }
+
+    /// Registers a present fence for lifetime tracking.
+    ///
+    /// The future is kept alive here (instead of being dropped, which could
+    /// block) until the GPU finishes with it and
+    /// [`cleanup_in_flight_futures`](Self::cleanup_in_flight_futures) removes
+    /// it.
+    pub(crate) fn push_in_flight_future(&self, fut: Arc<FinalPresentFuture>) {
+        self.in_flight_futures
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(fut);
+    }
+
+    /// Releases every in-flight present fence whose GPU work has finished, and
+    /// removes it from the list.
+    ///
+    /// This is non-blocking: each fence is first given a chance to clean up via
+    /// [`GpuFuture::cleanup_finished`], then kept only if its fence is not yet
+    /// signalled.
+    pub(crate) fn cleanup_in_flight_futures(&self) {
+        let mut list = self
+            .in_flight_futures
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        list.retain_mut(|fut| {
+            fut.cleanup_finished();
+            !fut.is_signaled().unwrap_or(true)
+        });
     }
 
     /// Only one swapchain can exist per surface. Use

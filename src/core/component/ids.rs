@@ -7,7 +7,11 @@ use std::{
 };
 
 use crate::core::{
-    ComponentGetError, ComponentGetMutError, level::{Level, LevelIndex}, relations::RELATIONS, world::World,
+    ComponentGetError, ComponentGetMutError,
+    level::{Level, LevelIndex},
+    relations::RELATIONS,
+    util::gen_slot_vec::SlotIndex,
+    world::World,
 };
 
 use super::*;
@@ -18,15 +22,14 @@ use super::*;
 ///
 /// Implementations of [`Hash`](std::hash::Hash) must match the following:
 ///
-/// ```rust
+/// ```rust,ignore
 /// fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-///     state.write_u32(self.pidx);
-///     state.write_u32(self.gidx);
+///     self.slot.hash(state);
 ///     self.lidx.hash(state);
 /// }
 /// ```
 ///
-/// [`PartialEq`] must compare `pidx`, `gidx`, and `lidx`. Comparing type IDs is not necessary.
+/// [`PartialEq`] must compare `slot` and `lidx`. Comparing type IDs is not necessary.
 pub unsafe trait ISlotId: Any + std::hash::Hash + PartialEq + Eq + Clone {
     /// The type or trait object this ID resolves to.
     type TraitObject: ISlotTr<Id = Self> + ?Sized;
@@ -38,14 +41,14 @@ pub unsafe trait ISlotId: Any + std::hash::Hash + PartialEq + Eq + Clone {
     /// The constructed ID must acquire the correct Component,
     /// targeting the same level, generation, and raw index. The type ID must
     /// match, too.
-    unsafe fn from_parts(pidx: u32, gidx: u32, lidx: LevelIndex, tyid: TypeId) -> Self
+    unsafe fn from_parts(slot: SlotIndex, lidx: LevelIndex, tyid: TypeId) -> Self
     where
         Self: Sized;
 
     /// Returns the level ID.
     fn level_id(&self) -> LevelIndex;
     /// Returns the parts required to access a Component from a [`Level`]
-    fn acquire_parts(&self) -> (u32, u32, TypeId);
+    fn acquire_parts(&self) -> (SlotIndex, TypeId);
 
     /// Try to access this ID immutably.
     ///
@@ -65,7 +68,10 @@ pub unsafe trait ISlotId: Any + std::hash::Hash + PartialEq + Eq + Clone {
     ///
     /// Mutably borrows the referenced Component's slot until the returned
     /// [`RefMut`] is dropped.
-    fn get_mut<'w>(&self, world: &'w World) -> Result<RefMut<'w, Self::TraitObject>, ComponentGetMutError>;
+    fn get_mut<'w>(
+        &self,
+        world: &'w World,
+    ) -> Result<RefMut<'w, Self::TraitObject>, ComponentGetMutError>;
 
     /// Returns the [`Level`] of the Component this ID references.
     ///
@@ -76,10 +82,10 @@ pub unsafe trait ISlotId: Any + std::hash::Hash + PartialEq + Eq + Clone {
 
     /// Attempts to cast this ID to another ID.
     fn cast<D: ISlotId>(self) -> Result<D, Self> {
-        let (pidx, gidx, tyid) = self.acquire_parts();
+        let (slot, tyid) = self.acquire_parts();
         if RELATIONS.implements(tyid, TypeId::of::<D::TraitObject>()) {
             let lidx = self.level_id();
-            Ok(unsafe { D::from_parts(pidx, gidx, lidx, tyid) })
+            Ok(unsafe { D::from_parts(slot, lidx, tyid) })
         } else {
             Err(self)
         }
@@ -120,8 +126,7 @@ impl<T: IComponent> ToDyn<dyn IComponent> for T {
 
 /// A basic Component ID, referring to a specific type.
 pub struct ComponentId<C: IComponent> {
-    pidx: u32,
-    gidx: u32,
+    slot: SlotIndex,
     lidx: LevelIndex,
     _marker: PhantomData<C>,
 }
@@ -129,25 +134,35 @@ pub struct ComponentId<C: IComponent> {
 impl<C: IComponent> Clone for ComponentId<C> {
     fn clone(&self) -> Self {
         Self {
-            pidx: self.pidx,
-            gidx: self.gidx,
+            slot: self.slot,
             lidx: self.lidx,
             _marker: PhantomData,
         }
     }
 }
 
+impl<C: IComponent> std::fmt::Debug for ComponentId<C> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "ComponentId(l/slot = {:?}/{:?}, type: {:?})",
+            self.lidx,
+            self.slot,
+            TypeId::of::<C>()
+        )
+    }
+}
+
 impl<C: IComponent> std::hash::Hash for ComponentId<C> {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        state.write_u32(self.pidx);
-        state.write_u32(self.gidx);
+        self.slot.hash(state);
         self.lidx.hash(state);
     }
 }
 
 impl<C: IComponent> PartialEq for ComponentId<C> {
     fn eq(&self, other: &Self) -> bool {
-        self.pidx == other.pidx && self.gidx == other.gidx && self.lidx == other.lidx
+        self.slot == other.slot && self.lidx == other.lidx
     }
 }
 
@@ -156,13 +171,12 @@ impl<C: IComponent> Eq for ComponentId<C> {}
 unsafe impl<C: IComponent> ISlotId for ComponentId<C> {
     type TraitObject = C;
 
-    unsafe fn from_parts(pidx: u32, gidx: u32, lidx: LevelIndex, _: TypeId) -> Self
+    unsafe fn from_parts(slot: SlotIndex, lidx: LevelIndex, _: TypeId) -> Self
     where
         Self: Sized,
     {
         Self {
-            pidx,
-            gidx,
+            slot,
             lidx,
             _marker: PhantomData,
         }
@@ -172,22 +186,25 @@ unsafe impl<C: IComponent> ISlotId for ComponentId<C> {
         self.lidx
     }
 
-    fn acquire_parts(&self) -> (u32, u32, TypeId) {
-        (self.pidx, self.gidx, TypeId::of::<C>())
+    fn acquire_parts(&self) -> (SlotIndex, TypeId) {
+        (self.slot, TypeId::of::<C>())
     }
 
     fn get<'w>(&self, world: &'w World) -> Result<Ref<'w, Self::TraitObject>, ComponentGetError> {
         world
             .get_level(self.lidx)
             .ok_or(ComponentGetError::NotFound)?
-            .acquire_component_internal(self.pidx, self.gidx)
+            .acquire_component_internal(self.slot)
     }
 
-    fn get_mut<'w>(&self, world: &'w World) -> Result<RefMut<'w, Self::TraitObject>, ComponentGetMutError> {
+    fn get_mut<'w>(
+        &self,
+        world: &'w World,
+    ) -> Result<RefMut<'w, Self::TraitObject>, ComponentGetMutError> {
         world
             .get_level(self.lidx)
             .ok_or(ComponentGetMutError::NotFound)?
-            .acquire_component_internal_mut(self.pidx, self.gidx)
+            .acquire_component_internal_mut(self.slot)
     }
 }
 
@@ -197,8 +214,7 @@ impl<C: IComponent> ISlotTr for C {
 
 /// A Component ID with no knowledge about the Component.
 pub struct DynComponentId {
-    pidx: u32,
-    gidx: u32,
+    slot: SlotIndex,
     lidx: LevelIndex,
     tyid: TypeId,
 }
@@ -206,8 +222,7 @@ pub struct DynComponentId {
 impl<C: IComponent> From<ComponentId<C>> for DynComponentId {
     fn from(value: ComponentId<C>) -> Self {
         Self {
-            pidx: value.pidx,
-            gidx: value.gidx,
+            slot: value.slot,
             lidx: value.lidx,
             tyid: TypeId::of::<C>(),
         }
@@ -217,24 +232,32 @@ impl<C: IComponent> From<ComponentId<C>> for DynComponentId {
 impl Clone for DynComponentId {
     fn clone(&self) -> Self {
         Self {
-            pidx: self.pidx,
-            gidx: self.gidx,
+            slot: self.slot,
             lidx: self.lidx,
             tyid: self.tyid,
         }
     }
 }
 
+impl std::fmt::Debug for DynComponentId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "DynComponentId(l/slot = {:?}/{:?}, type: {:?})",
+            self.lidx, self.slot, self.tyid
+        )
+    }
+}
+
 unsafe impl ISlotId for DynComponentId {
     type TraitObject = dyn IComponent;
 
-    unsafe fn from_parts(pidx: u32, gidx: u32, lidx: LevelIndex, tyid: TypeId) -> Self
+    unsafe fn from_parts(slot: SlotIndex, lidx: LevelIndex, tyid: TypeId) -> Self
     where
         Self: Sized,
     {
         Self {
-            pidx,
-            gidx,
+            slot,
             lidx,
             tyid,
         }
@@ -244,38 +267,40 @@ unsafe impl ISlotId for DynComponentId {
         self.lidx
     }
 
-    fn acquire_parts(&self) -> (u32, u32, TypeId) {
-        (self.pidx, self.gidx, self.tyid)
+    fn acquire_parts(&self) -> (SlotIndex, TypeId) {
+        (self.slot, self.tyid)
     }
 
     fn get<'w>(&self, world: &'w World) -> Result<Ref<'w, dyn IComponent>, ComponentGetError> {
         world
             .get_level(self.lidx)
             .ok_or(ComponentGetError::NotFound)?
-            .acquire_component_internal_dyn(self.tyid, self.pidx, self.gidx)
+            .acquire_component_internal_dyn(self.tyid, self.slot)
     }
 
-    fn get_mut<'w>(&self, world: &'w World) -> Result<RefMut<'w, dyn IComponent>, ComponentGetMutError> {
+    fn get_mut<'w>(
+        &self,
+        world: &'w World,
+    ) -> Result<RefMut<'w, dyn IComponent>, ComponentGetMutError> {
         world
             .get_level(self.lidx)
             .ok_or(ComponentGetMutError::NotFound)?
-            .acquire_component_internal_dyn_mut(self.tyid, self.pidx, self.gidx)
+            .acquire_component_internal_dyn_mut(self.tyid, self.slot)
     }
 }
 
 impl std::hash::Hash for DynComponentId {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        state.write_u32(self.pidx);
-        state.write_u32(self.gidx);
+        self.slot.hash(state);
         self.lidx.hash(state);
     }
 }
 
 impl<D: ISlotId> PartialEq<D> for DynComponentId {
     fn eq(&self, other: &D) -> bool {
-        let (pidx, gidx, _) = other.acquire_parts();
+        let (slot, _) = other.acquire_parts();
         let lidx = other.level_id();
-        self.pidx == pidx && self.gidx == gidx && self.lidx == lidx
+        self.slot == slot && self.lidx == lidx
     }
 }
 

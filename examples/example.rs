@@ -84,7 +84,6 @@ fn main() {
     unsafe {
         run_main_loop(
             |world| {
-                log!(dbg: "main loop started");
                 let main_level = world.main_level().expect("main level");
                 main_level.spawn_top_level::<CTop>(world, ());
             },

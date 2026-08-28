@@ -50,11 +50,11 @@ impl From<LevelIndex> for ComponentParent {
 ///
 /// Every Component implements [`spawn`](IComponent::spawn). `spawn` should be
 /// *the* way all Components are created. `spawn` should get the parent's
-/// [`Level`](crate::core::level::Level) from the
-/// [`World`](crate::core::world::World), create the Component, and return the
-/// new ID. During `spawn`, do not attempt to use an ancestor's child
-/// Components, as they may not be created yet. After `spawn`, the root caller
-/// should call [`post_init`](IComponent::post_init).
+/// [`Level`](crate::core::level::Level) from the [`World`], create the
+/// Component, and return the new ID. During `spawn`, do not attempt to use an
+/// ancestor's child Components, as they may not be created yet. After `spawn`,
+/// the root caller should call [`post_init`](IComponent::post_init). Do not
+/// call `post_init` from inside `spawn`.
 ///
 /// When a Component is removed from the tree, either by being replaced or
 /// explicitly removed, the parent should call [`destroy`](IComponent::destroy),
@@ -75,15 +75,24 @@ impl From<LevelIndex> for ComponentParent {
 /// disabled, `idle` may never run. `idle` is not suitable for driving game
 /// logic.
 ///
+/// You shouldn't manually call anything besides `parent`, `children`, and
+/// `spawn`, and maybe `post_init` and `destroy` if implementing a Component
+/// manually.
+///
 /// # Safety
 ///
-/// `parent_id` must return the ID passed through `spawn`.
+/// `parent` must return the ID passed through `spawn`, and any spawned
+/// Components must be reflected by the output of `children`, and be destroyed
+/// when appropriate.
 pub unsafe trait IComponent: Any {
     /// Must return the ID of the parent Component or [`Level`](crate::core::level::Level)
-    fn parent_id(&self) -> ComponentParent;
+    fn parent(&self) -> ComponentParent;
 
     /// Must return all child Components owned by this Component.
     fn children(&self) -> Box<dyn Iterator<Item = DynComponentId>>;
+
+    /// Returns this Component's own ID.
+    fn self_id(&self) -> DynComponentId;
 
     /// Extra parameter for [`spawn`](IComponent::spawn).
     type SpawnInfo
@@ -106,9 +115,13 @@ pub unsafe trait IComponent: Any {
     /// Calls [`post_init_hook`](IComponent::post_init_hook) on all children in
     /// depth-first, parent-first order.
     ///
+    /// You shouldn't override this.
+    ///
     /// # Borrows
     /// Mutably borrows all descendants of self, but only one at a time.
     fn post_init(&mut self, world: &World) {
+        let _span = tracing::trace_span!("post_init", top_id = ?self.self_id()).entered();
+
         self.post_init_hook();
 
         let mut stack: Vec<_> = self.children().collect();
@@ -144,9 +157,13 @@ pub unsafe trait IComponent: Any {
     /// Does *not* remove self; the caller removes this Component from its
     /// parent or top-level list after calling this.
     ///
+    /// You shouldn't override this.
+    ///
     /// # Borrows
     /// Mutably borrows all descendants of self, but only one at a time.
     fn destroy(&mut self, world: &World) {
+        let _span = tracing::trace_span!("destroy", top_id = ?self.self_id()).entered();
+
         self.destroy_hook();
 
         let mut stack: Vec<_> = self.children().collect();
@@ -169,10 +186,10 @@ pub unsafe trait IComponent: Any {
                 children
             };
 
-            let (pidx, gidx, tyid) = id.acquire_parts();
+            let (slot, tyid) = id.acquire_parts();
 
             if let Some(level) = world.get_level(id.level_id()) {
-                level.remove_component_internal(tyid, pidx, gidx);
+                level.remove_component_internal(tyid, slot);
             }
 
             stack.append(&mut children);
@@ -187,9 +204,13 @@ pub unsafe trait IComponent: Any {
     /// Calls [`pre_phys_hook`](IComponent::pre_phys_hook) on self and all
     /// descendants in depth-first, parent-first order.
     ///
+    /// You shouldn't override this.
+    ///
     /// # Borrows
     /// Mutably borrows all descendants of self, but only one at a time.
     fn pre_phys(&mut self, world: &World, delta: f32) {
+        let _span = tracing::trace_span!("pre_phys", top_id = ?self.self_id()).entered();
+
         self.pre_phys_hook(delta);
         let mut stack: Vec<_> = self.children().collect();
         stack.reverse();
@@ -219,9 +240,13 @@ pub unsafe trait IComponent: Any {
     /// Calls [`post_phys_hook`](IComponent::post_phys_hook) on all children in
     /// depth-first, parent-*last* order.
     ///
+    /// You shouldn't override this.
+    ///
     /// # Borrows
     /// Mutably borrows all descendants of self, but only one at a time.
     fn post_phys(&mut self, world: &World, delta: f32) {
+        let _span = tracing::trace_span!("post_phys", top_id = ?self.self_id()).entered();
+
         self.post_phys_hook(delta);
         let mut stack: Vec<_> = self.children().map(|c| (c, false)).collect();
         stack.reverse();
@@ -261,9 +286,13 @@ pub unsafe trait IComponent: Any {
     /// Calls [`idle_hook`](IComponent::idle_hook) on all children in
     /// depth-first, parent-first order.
     ///
+    /// You shouldn't override this.
+    ///
     /// # Borrows
     /// Mutably borrows all descendants of self, but only one at a time.
     fn idle(&mut self, world: &World, delta: f32) {
+        let _span = tracing::trace_span!("idle", top_id = ?self.self_id()).entered();
+
         self.idle_hook(delta);
         let mut stack: Vec<_> = self.children().collect();
         stack.reverse();

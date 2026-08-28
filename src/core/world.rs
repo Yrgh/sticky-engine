@@ -14,12 +14,13 @@ use anyhow::Result as AResult;
 
 use winit::{event::WindowEvent, event_loop::ActiveEventLoop, window::WindowAttributes};
 
-use crate::core::window::IWindow;
 use crate::core::{
     level::{Level, LevelIndex, LevelIndexOwned},
+    util::gen_slot_vec::{RefCellGenSlotVec, SlotIndex},
     vk::VkContext,
     window::{IWindowBoth, RootWindow, WindowId, WindowIdOwned},
 };
+use crate::core::{util::sentinel::SentinelMaxU32, window::IWindow};
 
 enum WorldAction {
     DeleteLevel(LevelIndexOwned),
@@ -28,95 +29,21 @@ enum WorldAction {
 
 enum LevelStorage {
     Occupied(Level),
-    Vacant(Option<usize>),
-}
-
-enum WindowStorage {
-    Occupied(LevelIndexOwned, Box<dyn IWindowBoth>),
-    Vacant(Option<usize>),
-}
-
-#[cfg(test)]
-#[derive(Clone, Copy)]
-enum WorldStorage {
-    Active(&'static World),
-    Inactive(&'static World),
-    NotCreated,
-}
-
-#[cfg(test)]
-thread_local! {
-    pub(crate) static WORLD_PTR: Cell<WorldStorage> = const { Cell::new(WorldStorage::NotCreated) };
-}
-
-pub(crate) fn new_world(headless: bool) -> World {
-    let world = World::new_empty();
-    if headless {
-        world.make_headless();
-    }
-    world
-}
-
-#[cfg(test)]
-pub(crate) fn new_world_test(headless: bool) -> &'static World {
-    match WORLD_PTR.get() {
-        WorldStorage::Active(_) => {
-            panic!("creating new world while one is already active on this thread")
-        }
-        WorldStorage::Inactive(w) => {
-            if headless {
-                w.make_headless();
-            }
-
-            WORLD_PTR.set(WorldStorage::Active(w));
-            w
-        }
-        WorldStorage::NotCreated => {
-            let world = World::new_empty();
-            if headless {
-                world.make_headless();
-            }
-            let world: &'static World = Box::leak(Box::new(world));
-
-            WORLD_PTR.set(WorldStorage::Active(world));
-            world
-        }
-    }
-}
-
-#[cfg(test)]
-pub(crate) struct DropWorldPtr {}
-
-#[cfg(test)]
-impl Drop for DropWorldPtr {
-    fn drop(&mut self) {
-        if let WorldStorage::Active(w) = WORLD_PTR.get() {
-            WORLD_PTR.set(WorldStorage::Inactive(w));
-            w.clear();
-        }
-    }
-}
-
-#[cfg(test)]
-/// Runs a
-pub fn run_test<F: FnOnce() -> R, R>(f: F) -> R {
-    let _ = new_world_test(true);
-    let _world_guard = DropWorldPtr {};
-    f()
+    Vacant(SentinelMaxU32),
 }
 
 /// The entire context of the engine, including Components.
 pub struct World {
+    // UnsafeCell custom implementation because RefCellGenSlotVec would mean RefCell<RefCell<>>
     levels: Box<boxcar::Vec<UnsafeCell<(u32, LevelStorage)>>>,
-    level_free_head: Cell<Option<usize>>,
+    level_free_head: Cell<SentinelMaxU32>,
 
     action_queue: RefCell<VecDeque<WorldAction>>,
 
     stable_rate: Cell<Duration>,
     min_idle_delay: Cell<Duration>,
 
-    windows: Box<boxcar::Vec<RefCell<(u32, WindowStorage)>>>,
-    window_free_head: Cell<Option<usize>>,
+    windows: RefCellGenSlotVec<(LevelIndexOwned, Box<dyn IWindowBoth>)>,
 
     main_window: Cell<Option<WindowId>>,
     main_level: Cell<Option<LevelIndex>>,
@@ -130,15 +57,15 @@ impl World {
     pub(crate) fn new_empty() -> Self {
         Self {
             levels: Box::new(boxcar::Vec::new()),
-            level_free_head: Cell::new(None),
+            level_free_head: Cell::new(SentinelMaxU32::NONE),
 
             action_queue: RefCell::new(VecDeque::new()),
 
             stable_rate: Cell::new(Duration::from_millis(15)),
             min_idle_delay: Cell::new(Duration::from_millis(15)),
 
-            windows: Box::new(boxcar::Vec::new()),
-            window_free_head: Cell::new(None),
+            windows: RefCellGenSlotVec::new(),
+
             main_window: Cell::new(None),
             main_level: Cell::new(None),
 
@@ -147,38 +74,6 @@ impl World {
             vk_ctx: OnceCell::new(),
         }
     }
-
-    #[cfg(test)]
-    pub(crate) fn clear(&self) {
-        // Reset levels
-        for (i, level) in self.levels.iter() {
-            let s = unsafe { level.get().as_mut_unchecked() };
-            s.0 = 0;
-            s.1 = LevelStorage::Vacant((i != self.levels.count() - 1).then_some(i + 1));
-        }
-        self.level_free_head
-            .set((!self.levels.is_empty()).then_some(0));
-
-        self.action_queue.borrow_mut().clear();
-
-        self.stable_rate.set(Duration::ZERO);
-        self.min_idle_delay.set(Duration::ZERO);
-
-        // Reset windows
-        for (i, w) in self.windows.iter() {
-            let mut s = w.borrow_mut();
-            s.0 = 0;
-            s.1 = WindowStorage::Vacant((i != self.windows.count() - 1).then_some(i + 1));
-        }
-        self.window_free_head
-            .set((!self.windows.is_empty()).then_some(0));
-
-        self.main_window.take();
-        self.main_level.take();
-
-        self.active_event_loop.take();
-    }
-
     pub(crate) fn make_headless(&self) {
         let lidxo = self.create_level();
         let lidx = lidxo.handle();
@@ -264,31 +159,17 @@ impl World {
 
                     s.0 = s.0.wrapping_add(1);
                     s.1 = LevelStorage::Vacant(self.level_free_head.take());
-                    self.level_free_head.set(Some(level.0 as usize));
+                    self.level_free_head.set(SentinelMaxU32::from_some(level.0));
 
                     level.leak();
                 }
                 WorldAction::DeleteWindow(id) => {
-                    let (_window, level) = {
-                        let mut storage = self
-                            .windows
-                            .get(id.0 as usize)
-                            .expect("window index not valid")
-                            .borrow_mut();
+                    let (window, level) = {
+                        let taken = self.windows.take(id.slot).expect("window index not valid");
 
-                        if id.1 != storage.0 {
+                        let Some((level, window)) = taken else {
                             continue;
-                        }
-
-                        let WindowStorage::Occupied(level, window) = std::mem::replace(
-                            &mut storage.1,
-                            WindowStorage::Vacant(self.window_free_head.get()),
-                        ) else {
-                            unreachable!()
                         };
-
-                        storage.0 = storage.0.wrapping_add(1);
-                        self.window_free_head.set(Some(id.0 as usize));
 
                         (window, level)
                     };
@@ -297,6 +178,7 @@ impl World {
                         self.main_window.set(None);
                         self.main_level.set(None);
                     }
+                    drop(window);
                     id.leak();
 
                     self.action_queue
@@ -350,6 +232,9 @@ impl World {
 
 impl World {
     /// Create a new [`Level`], returning the special index to free it.
+    ///
+    /// Note, the `Level` will be inactive, so make sure to call
+    /// [`Level::set_active`].
     pub fn create_level(&self) -> LevelIndexOwned {
         let i: u32 = self
             .levels
@@ -361,11 +246,15 @@ impl World {
             panic!("too many levels allocated");
         }
 
-        if let Some(head) = self.level_free_head.take() {
+        let head = self.level_free_head.take();
+
+        if head.is_some() {
+            let head = head.into_inner();
+
             // # Safety
             // We *know* there are no accessors to a dead level
             let s = unsafe {
-                (&raw const *self.levels.get(head).expect("level is free"))
+                (&raw const *self.levels.get(head as usize).expect("level is free"))
                     .cast_mut()
                     .as_mut_unchecked()
             };
@@ -374,14 +263,14 @@ impl World {
             let g = s.0;
             let LevelStorage::Vacant(new_head) = std::mem::replace(
                 &mut s.1,
-                LevelStorage::Occupied(Level::new(LevelIndex(head as u32, g))),
+                LevelStorage::Occupied(Level::new(LevelIndex(head, g))),
             ) else {
                 unreachable!()
             };
 
             self.level_free_head.set(new_head);
 
-            LevelIndexOwned(head as u32, s.0)
+            LevelIndexOwned(head, s.0)
         } else {
             self.levels.push(UnsafeCell::new((
                 0,
@@ -467,36 +356,11 @@ impl World {
         build: impl FnOnce(WindowId, LevelIndex, &Self) -> Box<dyn IWindowBoth>,
     ) -> WindowIdOwned {
         let handle = level.handle();
-
-        if let Some(head) = self.window_free_head.take() {
-            let mut storage = self.windows.get(head).expect("window is free").borrow_mut();
-            let g = storage.0;
-            let WindowStorage::Vacant(next) = std::mem::replace(
-                &mut storage.1,
-                WindowStorage::Occupied(level, build(WindowId(head as u32, g), handle, self)),
-            ) else {
-                unreachable!("free head should point to a vacant slot")
-            };
-
-            self.window_free_head.set(next);
-
-            WindowIdOwned(head as u32, g)
-        } else {
-            let i: u32 = self
-                .windows
-                .count()
-                .try_into()
-                .expect("too many windows allocated");
-
-            if i == u32::MAX {
-                panic!("too many windows allocated");
-            }
-
-            let window = build(WindowId(i, 0), handle, self);
-            self.windows
-                .push(RefCell::new((0, WindowStorage::Occupied(level, window))));
-            WindowIdOwned(i, 0)
-        }
+        let slot = self.windows.reserve();
+        let id = WindowId { slot };
+        let window = build(id, handle, self);
+        self.windows.fill(slot, (level, window));
+        WindowIdOwned { slot }
     }
 
     /// Returns an [`IWindow`] by its ID.
@@ -506,18 +370,10 @@ impl World {
     /// Immutably borrows the window's storage slot until the returned
     /// [`Ref`] is dropped.
     pub fn get_window(&self, id: WindowId) -> Option<Ref<'_, dyn IWindow>> {
-        Ref::filter_map(
-            self.windows.get(id.0 as usize)?.borrow(),
-            |s| -> Option<&dyn IWindow> {
-                if let WindowStorage::Occupied(_, window) = &s.1
-                    && id.1 == s.0
-                {
-                    Some(window.as_ref())
-                } else {
-                    None
-                }
-            },
-        )
+        let slot_ref = self.windows.acquire(id.slot).ok()?;
+        Ref::filter_map(slot_ref, |(_, window)| -> Option<&dyn IWindow> {
+            Some(window.as_ref())
+        })
         .ok()
     }
 
@@ -528,18 +384,10 @@ impl World {
     /// Mutably borrows the window's storage slot until the returned
     /// [`RefMut`] is dropped.
     pub fn get_window_mut(&self, id: WindowId) -> Option<RefMut<'_, dyn IWindow>> {
-        RefMut::filter_map(
-            self.windows.get(id.0 as usize)?.borrow_mut(),
-            |s| -> Option<&mut dyn IWindow> {
-                if let WindowStorage::Occupied(_, window) = &mut s.1
-                    && id.1 == s.0
-                {
-                    Some(window.as_mut())
-                } else {
-                    None
-                }
-            },
-        )
+        let slot_ref = self.windows.acquire_mut(id.slot).ok()?;
+        RefMut::filter_map(slot_ref, |(_, window)| -> Option<&mut dyn IWindow> {
+            Some(window.as_mut())
+        })
         .ok()
     }
 
@@ -550,14 +398,9 @@ impl World {
     /// Mutably borrows the window's storage slot until the returned
     /// [`RefMut`] is dropped.
     pub(crate) fn get_window_mut_int(&self, id: WindowId) -> Option<RefMut<'_, dyn IWindowBoth>> {
-        RefMut::filter_map(self.windows.get(id.0 as usize)?.borrow_mut(), |s| {
-            if let WindowStorage::Occupied(_, window) = &mut s.1
-                && id.1 == s.0
-            {
-                Some(window.as_mut())
-            } else {
-                None
-            }
+        let slot_ref = self.windows.acquire_mut(id.slot).ok()?;
+        RefMut::filter_map(slot_ref, |(_, window)| -> Option<&mut dyn IWindowBoth> {
+            Some(window.as_mut())
         })
         .ok()
     }
@@ -568,12 +411,10 @@ impl World {
     ///
     /// Transiently immutably borrows every window's storage slot.
     pub fn window_by_os_id(&self, os_id: winit::window::WindowId) -> Option<WindowId> {
-        self.windows.iter().find_map(|(pidx, storage)| {
-            let s = storage.borrow();
-            if let WindowStorage::Occupied(_, window) = &s.1
-                && window.as_os().map(|w| w.id()) == Some(os_id)
-            {
-                Some(WindowId(pidx as u32, s.0))
+        self.windows.ids().find_map(|slot| {
+            let s = self.windows.acquire(slot).ok()?;
+            if s.1.as_os().map(|w| w.id()) == Some(os_id) {
+                Some(WindowId { slot })
             } else {
                 None
             }
@@ -593,61 +434,77 @@ impl World {
         window.on_input_event(self, event);
     }
 
-    /// Returns an immutable iterator over every [`IWindow`].
+    /// Returns an immutable iterator over every [`IWindow`], paired with its
+    /// [`WindowId`].
     ///
     /// # Borrows
     ///
-    /// Each yielded [`Ref`] immutably borrows its window's
-    /// storage slot until dropped.
-    pub fn iter_windows(&self) -> impl Iterator<Item = Ref<'_, dyn IWindow>> {
-        self.windows.iter().filter_map(|(_, storage)| {
-            Ref::filter_map(storage.borrow(), |s| -> Option<&dyn IWindow> {
-                if let WindowStorage::Occupied(_, window) = &s.1 {
-                    Some(window.as_ref())
-                } else {
-                    None
-                }
-            })
-            .ok()
+    /// Each yielded pair immutably borrows its window's storage slot
+    /// until the pair is dropped.
+    pub fn iter_windows(&self) -> impl Iterator<Item = (WindowId, Ref<'_, dyn IWindow>)> {
+        self.windows.ids().filter_map(move |slot| {
+            let s = self.windows.acquire(slot).ok()?;
+            let id = WindowId { slot };
+            let window_ref = Ref::map(s, |(_, w)| -> &dyn IWindow { w.as_ref() });
+            Some((id, window_ref))
         })
     }
 
-    /// Returns a mutable iterator over every [`IWindow`].
+    /// Returns a mutable iterator over every [`IWindow`], paired with its
+    /// [`WindowId`].
     ///
     /// # Borrows
     ///
-    /// Each yielded [`RefMut`] mutably borrows its window's
-    /// storage slot until dropped.
-    pub fn iter_windows_mut(&self) -> impl Iterator<Item = RefMut<'_, dyn IWindow>> {
-        self.windows.iter().filter_map(|(_, storage)| {
-            RefMut::filter_map(storage.borrow_mut(), |s| -> Option<&mut dyn IWindow> {
-                if let WindowStorage::Occupied(_, window) = &mut s.1 {
-                    Some(window.as_mut())
-                } else {
-                    None
-                }
-            })
-            .ok()
+    /// Each yielded pair mutably borrows its window's storage slot
+    /// until the pair is dropped.
+    pub fn iter_windows_mut(&self) -> impl Iterator<Item = (WindowId, RefMut<'_, dyn IWindow>)> {
+        let ids: Vec<SlotIndex> = self.windows.ids().collect();
+        ids.into_iter().filter_map(move |slot| {
+            let s = self.windows.acquire_mut(slot).ok()?;
+            let id = WindowId { slot };
+            let window_ref = RefMut::map(s, |(_, w)| -> &mut dyn IWindow { w.as_mut() });
+            Some((id, window_ref))
         })
     }
 
-    /// Returns a mutable iterator over every window, as [`IWindowBoth`].
+    /// Returns a mutable iterator over every window, as [`IWindowBoth`], paired
+    /// with its [`WindowId`].
     ///
     /// # Borrows
     ///
-    /// Each yielded [`RefMut`] mutably borrows its window's
-    /// storage slot until dropped.
-    pub(crate) fn iter_windows_mut_int(&self) -> impl Iterator<Item = RefMut<'_, dyn IWindowBoth>> {
-        self.windows.iter().filter_map(|(_, storage)| {
-            RefMut::filter_map(storage.borrow_mut(), |s| {
-                if let WindowStorage::Occupied(_, window) = &mut s.1 {
-                    Some(window.as_mut())
-                } else {
-                    None
-                }
-            })
-            .ok()
+    /// Each yielded pair mutably borrows its window's storage slot
+    /// until the pair is dropped.
+    pub(crate) fn iter_windows_mut_int(
+        &self,
+    ) -> impl Iterator<Item = (WindowId, RefMut<'_, dyn IWindowBoth>)> {
+        let ids: Vec<SlotIndex> = self.windows.ids().collect();
+        ids.into_iter().filter_map(move |slot| {
+            let s = self.windows.acquire_mut(slot).ok()?;
+            let id = WindowId { slot };
+            let window_ref = RefMut::map(s, |(_, w)| -> &mut dyn IWindowBoth { w.as_mut() });
+            Some((id, window_ref))
         })
+    }
+
+    /// Attempts a non-blocking swapchain acquisition on every window.
+    ///
+    /// Returns `true` if there are no windows, or if at least one window staged a swapchain
+    /// image. This is used to decide whether idle/rendering work may proceed: if windows exist
+    /// but none has an image available, running idle would only build frames that cannot be
+    /// presented yet.
+    ///
+    /// # Borrows
+    ///
+    /// Mutably borrows each window's storage slot transiently.
+    pub(crate) fn try_acquire_any_swapchain(&self) -> bool {
+        if self.windows.is_empty() {
+            return true;
+        }
+
+        // Short circuit is ok because windows trying twice should be a no-op,
+        // and they should try during draw.
+        self.iter_windows_mut_int()
+            .any(|(_id, mut w)| w.try_acquire_swapchain())
     }
 
     /// Returns an iterator over every [`WindowId`].
@@ -656,14 +513,7 @@ impl World {
     ///
     /// Transiently immutably borrows each window's storage slot.
     pub fn iter_window_ids(&self) -> impl Iterator<Item = WindowId> {
-        self.windows.iter().filter_map(|(pidx, storage)| {
-            let s = storage.borrow();
-            if let WindowStorage::Occupied(_, _) = &s.1 {
-                Some(WindowId(pidx as u32, s.0))
-            } else {
-                None
-            }
-        })
+        self.windows.ids().map(|slot| WindowId { slot })
     }
 
     /// Destroy an [`IWindow`], along with its [`Level`].
@@ -671,5 +521,43 @@ impl World {
         self.action_queue
             .borrow_mut()
             .push_back(WorldAction::DeleteWindow(id));
+    }
+
+    /// Switches the [`Level`] bound to a given [`IWindow`].
+    ///
+    /// If the window is not found, returns `Err` with the given [`LevelIndexOwned`]. If the window
+    /// is found, returns the `LevelIndexOwned` of the replaced `Level`.
+    ///
+    /// # Borrows
+    ///
+    /// Mutably borrows the given window, and immutably borrows the given
+    /// `Level` and the `Level` previously owned by the window.
+    pub fn switch_window_level(
+        &self,
+        window: WindowId,
+        level: LevelIndexOwned,
+    ) -> Result<LevelIndexOwned, LevelIndexOwned> {
+        let new_handle = level.handle();
+
+        let old_level = {
+            let mut slot = match self.windows.acquire_mut(window.slot) {
+                Ok(slot) => slot,
+                Err(_) => return Err(level),
+            };
+
+            slot.1.switch_level(new_handle);
+
+            self.get_level(new_handle)
+                .expect("we have the owning handle")
+                .set_window(window);
+
+            std::mem::replace(&mut slot.0, level)
+        };
+
+        self.get_level(old_level.handle())
+            .expect("we have the owning handle")
+            .unset_window();
+
+        Ok(old_level)
     }
 }

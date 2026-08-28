@@ -1,12 +1,15 @@
 //! Type-trait reflection
 
 use std::{
-    any::{Any, TypeId}, cell::{Ref, RefMut}, collections::HashMap, sync::LazyLock,
+    any::{Any, TypeId},
+    cell::{Ref, RefMut},
+    collections::HashMap,
+    sync::LazyLock,
 };
 
 pub use linkme::distributed_slice;
 
-use crate::core::{component::{IComponent, ISlotId, ISlotTr}};
+use crate::core::component::{IComponent, ISlotId, ISlotTr};
 
 #[derive(Default)]
 pub(crate) struct TypeIdHasher(u64);
@@ -60,11 +63,11 @@ pub(crate) type BuildTypeId2Hasher = std::hash::BuildHasherDefault<TypeId2Hasher
 /// Entry for converting involvind a type object `T`
 pub struct Convert<T: ?Sized + ISlotTr> {
     /// Converts a [`std::cell::Ref<dyn IComponent>`] to a [`std::cell::Ref<T>`].
-    /// 
+    ///
     /// See [`IComponent`].
     pub comp_to_t_ref: for<'a> fn(Ref<'a, dyn IComponent>) -> Ref<'a, T>,
     /// Converts a [`std::cell::RefMut<dyn IComponent>`] to a [`std::cell::RefMut<T>`].
-    /// 
+    ///
     /// See [`IComponent`].
     pub comp_to_t_mut: for<'a> fn(RefMut<'a, dyn IComponent>) -> RefMut<'a, T>,
 }
@@ -74,7 +77,7 @@ pub struct Convert<T: ?Sized + ISlotTr> {
 pub static SLOT_IMPLS: [fn() -> (TypeId, TypeId, Box<dyn Any + Send + Sync>)];
 
 /// Reflection between types and traits.
-/// 
+///
 /// There is no way to instantiate this object outside of the global [`RELATIONS`].
 pub struct Relations {
     slot_to_ty: HashMap<TypeId, Vec<TypeId>, BuildTypeIdHasher>,
@@ -101,18 +104,20 @@ impl Relations {
     }
 
     /// Returns the [`Convert`] for the given `tyid`, if one is registered.
-    /// 
+    ///
     /// Note: `D` is an [`ISlotId`], not the trait.
     pub fn get_convert<D: ISlotId>(
         &'static self,
         tyid: TypeId,
     ) -> Option<&'static Convert<D::TraitObject>> {
-        let boxy = self.ty_converts.get(&(tyid, TypeId::of::<D::TraitObject>()))?;
+        let boxy = self
+            .ty_converts
+            .get(&(tyid, TypeId::of::<D::TraitObject>()))?;
         Some(boxy.downcast_ref().expect("bad slot id"))
     }
 
     /// Returns an iterator over all types registered as implementing a trait.
-    /// 
+    ///
     /// Note: `D` is an [`ISlotId`], not the trait.
     pub fn iter_slot_tys<D: ISlotId>(&self) -> impl Iterator<Item = TypeId> {
         self.slot_to_ty
@@ -123,10 +128,10 @@ impl Relations {
     }
 
     /// Returns `true` if a type is registered as implementing a trait.
-    /// 
+    ///
     /// `tyid` is the [`TypeId`] of the *self type*. `trid` is the `TypeId` of
     /// the *trait object* for the requested trait.
-    /// 
+    ///
     /// There is one important, kind of hacky facet: **if `tyid == trid` this
     /// also returns `true`**. This is because a
     /// [`ComponentId<C>`](crate::core::component::ComponentId) calls `C` its

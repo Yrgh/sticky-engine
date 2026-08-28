@@ -23,34 +23,30 @@ use winit::{
     window::WindowAttributes,
 };
 
-use tokio::sync::{mpsc, oneshot};
+use futures::channel::{mpsc, oneshot};
 
-use crate::{
-    core::{
-        component::ISlotId,
-        level::LevelIndex,
-        world::{World, new_world},
-    },
-    log,
-};
+use crate::core::{component::ISlotId, level::LevelIndex, world::World};
 
 pub(crate) type Abstract = Box<dyn Any + Send + Sync>;
 type InitFn = Box<dyn FnOnce(&World) + 'static>;
 
 pub(crate) enum MainJob {
-    Exec {
-        work: Box<dyn FnMut(&World) -> Abstract + Send + 'static>,
+    ExecAsync {
+        work: Box<dyn FnOnce(&World) -> Abstract + Send + 'static>,
         send: oneshot::Sender<Abstract>,
+    },
+    ExecSilent {
+        work: Box<dyn FnOnce(&World) + Send + 'static>,
     },
     Quit,
 }
 
-pub(crate) static RT_HANDLE: OnceLock<tokio::runtime::Handle> = OnceLock::new();
-pub(crate) static MAIN_QUEUE: OnceLock<mpsc::Sender<MainJob>> = OnceLock::new();
+pub(crate) static MAIN_QUEUE_ASYNC: OnceLock<mpsc::Sender<MainJob>> = OnceLock::new();
+pub(crate) static MAIN_QUEUE_SYNC: OnceLock<std::sync::mpsc::Sender<MainJob>> = OnceLock::new();
 
 struct MainLoop {
-    tokio_rt: tokio::runtime::Runtime,
-    jobs: mpsc::Receiver<MainJob>,
+    jobs_async: mpsc::Receiver<MainJob>,
+    jobs_sync: std::sync::mpsc::Receiver<MainJob>,
 
     world: World,
 
@@ -66,22 +62,27 @@ impl MainLoop {
     fn idle(&mut self, timeout: Option<Duration>) -> bool {
         let start = Instant::now();
         while timeout.is_none_or(|t| start.elapsed() < t) {
-            let job = match self.jobs.try_recv() {
+            // Clear out sync first, since that is unbounded
+            let job = match self.jobs_sync.try_recv() {
                 Ok(j) => j,
-                Err(mpsc::error::TryRecvError::Empty) => break,
-                Err(mpsc::error::TryRecvError::Disconnected) => {
-                    panic!("something assigned to MAIN_QUEUE")
-                }
+                // If sync is empty, work on async.
+                Err(std::sync::mpsc::TryRecvError::Empty) => match self.jobs_async.try_recv() {
+                    Ok(j) => j,
+                    Err(mpsc::TryRecvError::Empty) => break,
+                    Err(mpsc::TryRecvError::Closed) => unreachable!(),
+                },
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => unreachable!(),
             };
 
             match job {
-                MainJob::Exec { mut work, send } => {
+                MainJob::ExecAsync { work, send } => {
                     // No work if future is dropped.
-                    if !send.is_closed() {
+                    if !send.is_canceled() {
                         // Fails if the future is dropped while work is processing.
                         let _ = send.send(work(&self.world));
                     }
                 }
+                MainJob::ExecSilent { work } => work(&self.world),
                 MainJob::Quit => return true,
             }
         }
@@ -93,18 +94,19 @@ impl MainLoop {
 
         let vk_ctx = self.world.get_vk().expect("vulkan is not initialized");
 
-        let mut render_tasks =
-            self.world
-                .iter_levels()
-                .try_fold(Vec::new(), |mut acc, level| -> AResult<_> {
-                    let rq = level.update_rendering_queue();
+        let mut render_tasks = self
+            .world
+            .iter_levels()
+            .filter(|l| l.is_active())
+            .try_fold(Vec::new(), |mut acc, level| -> AResult<_> {
+                let rq = level.update_rendering_queue();
 
-                    let deps = rq.search_dependencies();
-                    let (idle_commands, prq) = rq.build(vk_ctx.clone())?;
+                let deps = rq.search_dependencies();
+                let (idle_commands, prq) = rq.build(vk_ctx.clone())?;
 
-                    acc.push((level.id(), deps, idle_commands, prq));
-                    Ok(acc)
-                })?;
+                acc.push((level.id(), deps, idle_commands, prq));
+                Ok(acc)
+            })?;
 
         // Kahn's
         {
@@ -177,7 +179,7 @@ impl MainLoop {
             )?
             .flush()?;
 
-        for mut window in self.world.iter_windows_mut_int() {
+        for (_id, mut window) in self.world.iter_windows_mut_int() {
             let lidx = window.level();
             window.set_prq(prqs.remove(&lidx).expect("window missing a prq"));
 
@@ -187,6 +189,46 @@ impl MainLoop {
         }
 
         Ok(())
+    }
+
+    fn physics_handling(&mut self) -> bool {
+        let mut iters = 0;
+        while iters < STABLE_SPIRAL_LIMIT && Instant::now() > self.stable_accumulator {
+            let span = tracing::debug_span!("stable_iteration", iteration = iters);
+
+            for level in self.world.iter_levels().filter(|l| l.is_active()) {
+                for id in level.iter_top_level() {
+                    let mut comp = id
+                        .get_mut(&self.world)
+                        .expect("component was just acquired");
+                    comp.pre_phys(&self.world, self.world.get_stable_tick_rate().as_secs_f32());
+                }
+            }
+
+            tracing::trace_span!(parent: &span, "physics_iteration", iteration = iters).in_scope(
+                || {
+                    // TODO: Physics
+                },
+            );
+
+            for level in self.world.iter_levels().filter(|l| l.is_active()) {
+                for id in level.iter_top_level() {
+                    let mut comp = id
+                        .get_mut(&self.world)
+                        .expect("component was just acquired");
+                    comp.post_phys(&self.world, self.world.get_stable_tick_rate().as_secs_f32());
+                }
+            }
+
+            self.stable_accumulator += self.world.get_stable_tick_rate();
+            iters += 1;
+
+            if self.idle(Some(Duration::from_micros(250))) {
+                return true;
+            }
+        }
+
+        false
     }
 }
 
@@ -202,6 +244,7 @@ impl ApplicationHandler for MainLoop {
         unsafe { self.world.set_active_event_loop(event_loop) };
 
         if cause == winit::event::StartCause::Init {
+            let _span = tracing::info_span!("engine_init").entered();
             // First init code goes here
 
             // Create main window
@@ -209,7 +252,7 @@ impl ApplicationHandler for MainLoop {
                 if let Err(e) = self.world.init_vk(super::vk::InitializationOptions {
                     event_loop: Some(event_loop),
                 }) {
-                    log!(err: "failed to initialize vulkano: {e}");
+                    tracing::error!("failed to initialize vulkano: {e}");
                     event_loop.exit();
 
                     self.world.unset_active_event_loop();
@@ -233,7 +276,7 @@ impl ApplicationHandler for MainLoop {
                         owned.leak();
                     }
                     Err(e) => {
-                        log!(err: "failed to create main window: {e}");
+                        tracing::error!("failed to create main window: {e}");
                         event_loop.exit();
 
                         self.world.unset_active_event_loop();
@@ -243,6 +286,7 @@ impl ApplicationHandler for MainLoop {
             }
 
             if let Some(init) = self.init_fn.take() {
+                let _span = tracing::debug_span!("user_init").entered();
                 init(&self.world);
             }
         }
@@ -272,7 +316,9 @@ impl ApplicationHandler for MainLoop {
                         self.world.unset_active_event_loop();
                         return;
                     }
-                    log!(dbg: "ignoring close request for a non-main window");
+
+                    drop(window);
+                    self.world.handle_window_event(id, &event);
                 }
                 WindowEvent::RedrawRequested => {
                     window.draw();
@@ -281,13 +327,12 @@ impl ApplicationHandler for MainLoop {
                     window.on_resize(&self.world, new_size);
                 }
                 event => {
-                    // Drop window since handle_window_event creates a new borrow
                     drop(window);
-                    self.world.handle_window_event(id, &event)
+                    self.world.handle_window_event(id, &event);
                 }
             }
         } else {
-            log!(wrn: "event from unknown window {window_id:?}");
+            tracing::warn!(?window_id, "winit event for unknown window");
         }
 
         if self.idle(Some(Duration::from_micros(250))) {
@@ -300,43 +345,31 @@ impl ApplicationHandler for MainLoop {
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         unsafe { self.world.set_active_event_loop(event_loop) };
 
-        unsafe { self.world.flush_actions() };
-
-        let mut iters = 0;
-        while iters < STABLE_SPIRAL_LIMIT && Instant::now() > self.stable_accumulator {
-            for level in self.world.iter_levels() {
-                for id in level.iter_top_level() {
-                    let mut comp = id.get_mut(&self.world).expect("component was just acquired");
-                    comp.pre_phys(&self.world, self.world.get_stable_tick_rate().as_secs_f32());
-                }
-            }
-
-            // TODO: Physics
-
-            for level in self.world.iter_levels() {
-                for id in level.iter_top_level() {
-                    let mut comp = id.get_mut(&self.world).expect("component was just acquired");
-                    comp.post_phys(&self.world, self.world.get_stable_tick_rate().as_secs_f32());
-                }
-            }
-
-            self.stable_accumulator += self.world.get_stable_tick_rate();
-            iters += 1;
-
-            if self.idle(Some(Duration::from_micros(250))) {
-                event_loop.exit();
-                self.world.unset_active_event_loop();
-                return;
-            }
+        // Release any present fences the GPU has finished with, both before and
+        // after doing frame work this cycle.
+        if let Some(vk) = self.world.get_vk() {
+            vk.cleanup_in_flight_futures();
         }
 
-        if self.last_idle_time.elapsed() >= self.world.get_idle_min_delay() {
+        unsafe { self.world.flush_actions() };
+
+        if self.physics_handling() {
+            self.world.unset_active_event_loop();
+            event_loop.exit();
+            return;
+        }
+
+        if self.last_idle_time.elapsed() >= self.world.get_idle_min_delay()
+            && self.world.try_acquire_any_swapchain()
+        {
             let delta = self.last_idle_time.elapsed().as_secs_f32();
             self.last_idle_time = Instant::now();
 
             for level in self.world.iter_levels() {
                 for id in level.iter_top_level() {
-                    id.get_mut(&self.world).expect("just acquired").idle(&self.world, delta);
+                    id.get_mut(&self.world)
+                        .expect("just acquired")
+                        .idle(&self.world, delta);
                 }
             }
 
@@ -347,7 +380,13 @@ impl ApplicationHandler for MainLoop {
         }
 
         if self.idle(None) {
+            self.world.unset_active_event_loop();
             event_loop.exit();
+            return;
+        }
+
+        if let Some(vk) = self.world.get_vk() {
+            vk.cleanup_in_flight_futures();
         }
 
         self.world.unset_active_event_loop();
@@ -356,7 +395,7 @@ impl ApplicationHandler for MainLoop {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         unsafe { self.world.set_active_event_loop(event_loop) };
 
-        for mut window in self.world.iter_windows_mut_int() {
+        for (_id, mut window) in self.world.iter_windows_mut_int() {
             window.resume();
         }
 
@@ -366,7 +405,7 @@ impl ApplicationHandler for MainLoop {
     fn suspended(&mut self, event_loop: &ActiveEventLoop) {
         unsafe { self.world.set_active_event_loop(event_loop) };
 
-        for mut window in self.world.iter_windows_mut_int() {
+        for (_id, mut window) in self.world.iter_windows_mut_int() {
             window.suspend();
         }
 
@@ -374,7 +413,7 @@ impl ApplicationHandler for MainLoop {
     }
 }
 
-const MAIN_QUEUE_LEN: usize = 16;
+const MAIN_QUEUE_ASYNC_LEN: usize = 8;
 
 /// Entry point for the engine.
 ///
@@ -402,13 +441,18 @@ pub unsafe fn run_main_loop(init_fn: impl FnOnce(&World) + 'static, headless: bo
         panic!("Cannot run the main loop during a test. Write an example");
     }
 
-    let (job_tx, job_rx) = mpsc::channel(MAIN_QUEUE_LEN);
+    let (job_async_tx, job_async_rx) = mpsc::channel(MAIN_QUEUE_ASYNC_LEN);
+    let (job_sync_tx, job_sync_rx) = std::sync::mpsc::channel();
 
-    let world = new_world(headless);
+    let world = World::new_empty();
+
+    if headless {
+        world.make_headless();
+    }
 
     let mut main_loop = MainLoop {
-        tokio_rt: tokio::runtime::Runtime::new()?,
-        jobs: job_rx,
+        jobs_async: job_async_rx,
+        jobs_sync: job_sync_rx,
 
         world,
 
@@ -420,13 +464,13 @@ pub unsafe fn run_main_loop(init_fn: impl FnOnce(&World) + 'static, headless: bo
         last_idle_time: Instant::now(),
     };
 
-    RT_HANDLE
-        .set(main_loop.tokio_rt.handle().clone())
-        .expect("no other sources should set RT_HANDLE");
+    MAIN_QUEUE_ASYNC
+        .set(job_async_tx)
+        .expect("no other sources should set MAIN_QUEUE_ASYNC");
 
-    MAIN_QUEUE
-        .set(job_tx)
-        .expect("no other sources should set MAIN_QUEUE");
+    MAIN_QUEUE_SYNC
+        .set(job_sync_tx)
+        .expect("no other sources should set MAIN_QUEUE_SYNC");
 
     let event_loop = EventLoop::new()?;
     event_loop.set_control_flow(winit::event_loop::ControlFlow::Poll);
@@ -435,17 +479,40 @@ pub unsafe fn run_main_loop(init_fn: impl FnOnce(&World) + 'static, headless: bo
     Ok(())
 }
 
+/// Error returned when the main loop has ended or hasn't started.
+pub struct MainClosedError;
+
+pub(crate) fn queue(job: MainJob) -> Result<(), MainClosedError> {
+    let Some(mq) = MAIN_QUEUE_SYNC.get() else {
+        return Err(MainClosedError);
+    };
+
+    mq.send(job).map_err(|_| MainClosedError)?;
+
+    Ok(())
+}
+
+pub(crate) async fn queue_async(job: MainJob) -> Result<(), MainClosedError> {
+    use futures::SinkExt;
+    let Some(mut mq) = MAIN_QUEUE_ASYNC.get().cloned() else {
+        return Err(MainClosedError);
+    };
+
+    mq.send(job).await.map_err(|_| MainClosedError)?;
+
+    Ok(())
+}
+
 /// Queues the main loop to quit.
-pub fn queue_quit() {
-    RT_HANDLE
-        .get()
-        .expect("main loop not running")
-        .spawn(async {
-            MAIN_QUEUE
-                .get()
-                .expect("main loop not running")
-                .send(MainJob::Quit)
-                .await
-                .expect("main loop not running");
-        });
+/// 
+/// If you can use `.await`, use [`queue_quit_async`] instead.
+pub fn queue_quit() -> Result<(), MainClosedError> {
+    queue(MainJob::Quit)
+}
+
+/// Queues the main loop to quit, but using the async queue.
+///
+/// This function is preferred in async contexts.
+pub async fn queue_quit_async() -> Result<(), MainClosedError> {
+    queue_async(MainJob::Quit).await
 }

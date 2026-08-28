@@ -8,6 +8,7 @@
 use thiserror::Error;
 
 pub mod component;
+pub mod gpu_api;
 pub mod input;
 pub mod level;
 pub mod main_loop;
@@ -16,6 +17,7 @@ pub mod relations;
 pub mod renderer;
 pub mod task;
 pub mod trans;
+pub mod util;
 pub mod vk;
 pub mod window;
 pub mod world;

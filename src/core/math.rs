@@ -1,6 +1,6 @@
 //! Math utilities and reexports
 
-pub use glamx::{FloatExt, Vec2Swizzles, Vec3Swizzles, Vec4Swizzles, MatExt, EulerRot};
+pub use glamx::{EulerRot, FloatExt, MatExt, Vec2Swizzles, Vec3Swizzles, Vec4Swizzles};
 
 /// 2D, single-precision vector
 pub type Vec2 = glamx::Vec2;
@@ -30,6 +30,3 @@ pub type Quat = glamx::Quat;
 pub type Pose2 = glamx::Pose2;
 /// 3D, single-precision translation and rotation
 pub type Pose3 = glamx::Pose3;
-
-
-
