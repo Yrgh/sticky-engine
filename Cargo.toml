@@ -12,15 +12,22 @@ categories = ["game-development", "game-engines", "rendering", "rendering::engin
 members = ["macros"]
 
 [features]
-default = ["vulkan-renderer"]
+default = ["vulkan-renderer", "simple-asset-impls"]
+nightly = []
+
 gpu-vulkan = ["dep:vulkano"]
 vulkan-renderer = ["gpu-vulkan"]
 
+simple-asset-impls = []
+
+wincode = ["dep:wincode"]
+ron = ["dep:ron", "dep:serde"]
+
 [dependencies]
 rapier3d = "0.34.0"
-vulkano = {version="0.35.2", optional=true}
+vulkano = { version = "0.35.2", optional = true }
 winit = "0.30.13"
-sticky-engine-macros = {path="macros"}
+sticky-engine-macros = { path = "macros" }
 anyhow = "1.0.104"
 linkme = "0.3.37"
 elsa = "1.11.2"
@@ -30,6 +37,11 @@ smallvec = "1.15.2"
 thiserror = "2.0.20"
 tracing = "0.1.44"
 futures = "0.3.34"
+event-listener = "5.4.2"
+parking_lot = "0.12.5"
+wincode = { version = "0.6.1", optional = true }
+ron = { version = "0.12.2", optional = true }
+serde = { version = "1.0.229", optional = true }
 
 [dev-dependencies]
 tracing-subscriber = "0.3.23"

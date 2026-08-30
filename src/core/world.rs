@@ -4,10 +4,7 @@
 //! non-blocking interior mutability, meaning the [`World`] cannot be shared across threads. The
 //! [`World`] contains all [`Level`]s, [`IWindow`]s, and Components.
 use std::{
-    cell::{Cell, Ref, RefCell, RefMut, UnsafeCell},
-    collections::VecDeque,
-    rc::Rc,
-    time::Duration,
+    cell::{Cell, Ref, RefCell, RefMut, UnsafeCell}, collections::VecDeque, rc::Rc, sync::Arc, time::Duration,
 };
 
 use anyhow::Result as AResult;
@@ -21,10 +18,7 @@ use winit::{
 };
 
 use crate::core::{
-    gpu_api::{GpuApi, IGpuApi, IRenderer},
-    level::{Level, LevelIndex, LevelIndexOwned},
-    util::gen_slot_vec::{RefCellGenSlotVec, SlotIndex},
-    window::{IWindowBoth, RootWindow, WindowId, WindowIdOwned},
+    asset::AssetManager, gpu_api::{GpuApi, IGpuApi, IRenderer}, level::{Level, LevelIndex, LevelIndexOwned}, util::gen_slot_vec::{RefCellGenSlotVec, SlotIndex}, window::{IWindowBoth, RootWindow, WindowId, WindowIdOwned},
 };
 
 use crate::core::{util::sentinel::SentinelMaxU32, window::IWindow};
@@ -59,6 +53,8 @@ pub struct World {
 
     gpu_api: Option<GpuApi>,
     renderer: Option<Rc<dyn IRenderer>>,
+
+    asset_manager: Arc<AssetManager>,
 }
 
 impl World {
@@ -562,6 +558,13 @@ impl World {
 }
 
 impl World {
+    /// Returns the [`AssetManager`] currently tied to the [`World`].
+    pub fn asset_manager(&self) -> &Arc<AssetManager> {
+        &self.asset_manager
+    }
+}
+
+impl World {
     /// Create a new builder.
     pub fn builder() -> WorldBuilder {
         WorldBuilder {
@@ -570,6 +573,8 @@ impl World {
 
             stable_rate: Duration::from_millis(15),
             min_idle_delay: Duration::from_millis(15),
+
+            asset_manager: None,
         }
     }
 
@@ -618,6 +623,7 @@ pub(crate) enum GpuCreateMode {
 pub struct WorldBuilder {
     pub(crate) main_mode: MainMode,
     pub(crate) gpu_create_mode: GpuCreateMode,
+    asset_manager: Option<Arc<AssetManager>>,
 
     stable_rate: Duration,
     min_idle_delay: Duration,
@@ -678,6 +684,14 @@ impl WorldBuilder {
         self
     }
 
+    /// Set the [`AssetManager`] the [`World`] will own.
+    /// 
+    /// You must set the asset manager, or your program will panic.
+    pub fn with_asset_manager(&mut self, asset_manager: Arc<AssetManager>) -> &mut Self {
+        self.asset_manager = Some(asset_manager);
+        self
+    }
+
     /// Set the stable tick rate.
     ///
     /// Defaults to 15ms
@@ -717,6 +731,8 @@ impl WorldBuilder {
             },
 
             renderer: None,
+
+            asset_manager: self.asset_manager.clone().expect("no asset manager set"),
         };
 
         if let MainMode::OnlyLevel = self.main_mode {
@@ -736,6 +752,10 @@ impl WorldBuilder {
     ///
     /// If you are writing tests, this is a better option, but it is highly
     /// recommended to run the full engine.
+    /// 
+    /// # Panics
+    /// 
+    /// If the asset manager isn't set.
     pub fn build(self) -> World {
         self.finish_ish()
     }

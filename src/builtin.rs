@@ -13,3 +13,4 @@ pub mod api_vk;
 #[cfg(feature = "vulkan-renderer")]
 pub mod renderer_vk;
 
+pub mod assets;

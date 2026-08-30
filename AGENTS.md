@@ -8,7 +8,7 @@ Instructions for working on the `sticky-engine` crate.
 - `src/core/component/` — component definitions, IDs (`ids.rs`), and properties (`props.rs`).
 - `src/builtin.rs` — built-in, non-core features. Most Components/Slots the engine ships goes here, *not* in `core/`. These may be gated behind feature flags and are reimplementable by users..
 - `macros/` — proc-macro workspace member (`comp_def!`, `slot_def!`, `slot_impl!`).
-- `src/main.rs` — binary entry point / usage example.
+- `examples/*` — usage examples,.
 
 Unless a built-in Component/Slot touches a macro or is used internally by the engine, it must be separated from the `core` module.
 

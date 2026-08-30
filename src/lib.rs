@@ -55,14 +55,32 @@
 //!
 //! Note that it is up to the you to set a [`Subscriber`](tracing::Subscriber)
 //! in your application.
+//! 
+//! The following feature flags are available:
+//! 
+//! - **`nightly`**: enables some extra features like unsized coercion on some
+//!   types. Requires a nightly compiler.
+//! 
+//! - **`gpu-vulkan`**: adds a built-in GPU API based on `vulkano`. Enabled by
+//!   default.
+//! 
+//! - **`vulkan-renderer`**: adds a default renderer. Requires `gpu-vulkan`.
+//!   Enabled by default.
+//! 
+//! - **`simple-asset-impls`**:: adds a default
+//!   [`IAssetCacher`](core::asset::IAssetCacher) and
+//!   [`IAssetAccessor`](core::asset::IAssetAccessor)
 
 #![warn(clippy::all)]
+#![allow(clippy::type_complexity)]
 #![deny(
     clippy::unwrap_used,
     clippy::expect_fun_call,
     clippy::todo,
     missing_docs
 )]
+
+#![cfg_attr(feature = "nightly", feature(unsize, coerce_unsized))]
 
 pub use glamx;
 pub use rapier3d;

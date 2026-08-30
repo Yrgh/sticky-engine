@@ -1,4 +1,11 @@
-use sticky_engine::{builtin::renderer_vk::VkRenderer, prelude::*};
+use sticky_engine::{
+    builtin::{
+        assets::simple_impl::{FalseAsyncFs, FsAccessor},
+        renderer_vk::VkRenderer,
+    },
+    core::asset::AssetManager,
+    prelude::*,
+};
 use tracing_subscriber::fmt::format::FmtSpan;
 
 comp_def! {
@@ -86,12 +93,22 @@ fn main() {
         tracing_subscriber::fmt()
             .with_span_events(FmtSpan::NONE)
             .with_target(true)
-            .finish()
+            .finish(),
     )
     .expect("failed to set global subscriber");
 
+    let mut builder = AssetManager::builder();
+    builder
+        // FalseAsyncFs is only to remove the need for a runtime here.
+        .with_accessor(FsAccessor::<FalseAsyncFs>::new("./"));
+
+    let asset_manager = builder.build();
+
     let mut builder = World::builder();
-    builder.with_renderer::<VkRenderer>(()).with_window();
+    builder
+        .with_renderer::<VkRenderer>(())
+        .with_window()
+        .with_asset_manager(asset_manager);
 
     unsafe {
         run_main_loop(builder, |world| {

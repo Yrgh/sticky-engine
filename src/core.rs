@@ -7,6 +7,7 @@
 
 use thiserror::Error;
 
+pub mod asset;
 pub mod component;
 pub mod gpu_api;
 pub mod input;
