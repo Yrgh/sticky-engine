@@ -1,5 +1,7 @@
 use std::{
-    any::{Any, TypeId, type_name}, collections::{HashMap, HashSet, hash_map::Entry}, sync::Arc,
+    any::{Any, TypeId, type_name},
+    collections::{HashMap, HashSet, hash_map::Entry},
+    sync::Arc,
 };
 
 use parking_lot::RwLock;
@@ -54,7 +56,7 @@ pub enum SetAssetError {
 pub struct AssetManager {
     // I'm concerned about Box<(inside) Arc<dyn IAssetCacher>>. Should I just
     // use Arc here in the first place?
-    loaders_cachers: HashMap<TypeId, (Box<dyn IAssetLoader>, Box<dyn IAssetCacher>)>,
+    loaders_cachers: HashMap<TypeId, (Box<dyn IAssetLoader>, Arc<dyn IAssetCacher>)>,
     savers: HashMap<TypeId, Box<dyn IAssetSaver>>,
     accessor: Box<dyn IAssetAccessor>,
     // For non-cached, saved items
@@ -239,7 +241,7 @@ impl AssetManager {
             Asset::from_parts(path, asset.into_inner().into(), None)
         };
 
-        let bytes = saver.save_as_bytes(asset.as_ref())?;
+        let bytes = saver.save_as_bytes(asset.path(), asset.as_ref())?;
 
         self.accessor.save_bytes_blocking(asset.path(), &bytes)?;
 
@@ -276,7 +278,7 @@ impl AssetManager {
             Asset::from_parts(path, asset.into_inner().into(), None)
         };
 
-        let bytes = saver.save_as_bytes(asset.as_ref())?;
+        let bytes = saver.save_as_bytes(asset.path(), asset.as_ref())?;
 
         self.accessor.save_bytes_async(asset.path(), &bytes).await?;
 
@@ -290,7 +292,7 @@ impl AssetManager {
 pub struct AssetManagerBuilder {
     loaders: HashMap<TypeId, Box<dyn IAssetLoader>>,
     savers: HashMap<TypeId, Box<dyn IAssetSaver>>,
-    cachers: HashMap<TypeId, Box<dyn IAssetCacher>>,
+    cachers: HashMap<TypeId, Arc<dyn IAssetCacher>>,
     default_cacher: Option<Arc<dyn IAssetCacher>>,
     accessor: Option<Box<dyn IAssetAccessor>>,
 }
@@ -313,15 +315,12 @@ impl AssetManagerBuilder {
     ///
     /// The default cacher will be cloned for any type that has a loader but no
     /// cacher.
-    pub fn with_default_cacher(
-        &mut self,
-        default_cacher: impl IAssetCacher,
-    ) -> &mut Self {
+    pub fn with_default_cacher(&mut self, default_cacher: impl IntoCacher) -> &mut Self {
         debug_assert!(
             self.default_cacher.is_none(),
             "multiple default cachers added"
         );
-        self.default_cacher = Some(Arc::new(default_cacher));
+        self.default_cacher = Some(default_cacher.into_cacher());
         self
     }
 
@@ -361,10 +360,7 @@ impl AssetManagerBuilder {
     ///
     /// You may only register one saver per asset type. If you attempt to
     /// provide a second, this will panic.
-    pub fn register_saver<T: Any + Send + Sync>(
-        &mut self,
-        saver: impl IAssetSaver,
-    ) -> &mut Self {
+    pub fn register_saver<T: Any + Send + Sync>(&mut self, saver: impl IAssetSaver) -> &mut Self {
         let saver = Box::new(saver);
         let type_id = TypeId::of::<T>();
 
@@ -387,11 +383,8 @@ impl AssetManagerBuilder {
     ///
     /// You may only register one cacher per asset type. If you attempt to
     /// provide a second, this will panic.
-    pub fn register_cacher<T: Any + Send + Sync>(
-        &mut self,
-        cacher: impl IAssetCacher,
-    ) -> &mut Self {
-        let cacher = Box::new(cacher);
+    pub fn register_cacher<T: Any + Send + Sync>(&mut self, cacher: impl IntoCacher) -> &mut Self {
+        let cacher = cacher.into_cacher();
         let type_id = TypeId::of::<T>();
 
         if !cacher.caches(type_id) {
@@ -410,30 +403,34 @@ impl AssetManagerBuilder {
     }
 
     /// Register a loader and saver from a value that is both.
-    pub fn register_loader_saver<T: Any + Send + Sync, Ls: IAssetLoader + IAssetSaver + Clone>(
+    pub fn register_saver_loader<T: Any + Send + Sync, Sl: SaverLoader>(
         &mut self,
-        loader_saver: Ls
+        saver_loader: Sl,
     ) -> &mut Self {
-        self.register_loader::<T>(loader_saver.clone()).register_saver::<T>(loader_saver)
+        let (saver, loader) = saver_loader.split();
+        self.register_loader::<T>(loader).register_saver::<T>(saver)
     }
 
     /// Register both a loader and a cacher.
     pub fn register_loader_cacher<T: Any + Send + Sync>(
         &mut self,
         loader: impl IAssetLoader,
-        cacher: impl IAssetCacher
+        cacher: impl IntoCacher,
     ) -> &mut Self {
-        self.register_loader::<T>(loader).register_cacher::<T>(cacher)
+        self.register_loader::<T>(loader)
+            .register_cacher::<T>(cacher)
     }
 
     /// Register a loader, cacher, and saver all at once
     pub fn register_all<T: Any + Send + Sync>(
         &mut self,
         loader: impl IAssetLoader,
-        cacher: impl IAssetCacher,
+        cacher: impl IntoCacher,
         saver: impl IAssetSaver,
     ) -> &mut Self {
-        self.register_loader::<T>(loader).register_cacher::<T>(cacher).register_saver::<T>(saver)
+        self.register_loader::<T>(loader)
+            .register_cacher::<T>(cacher)
+            .register_saver::<T>(saver)
     }
 
     /// Build an [`AssetManager`].
@@ -459,10 +456,7 @@ impl AssetManagerBuilder {
                         );
                     }
 
-                    (
-                        type_id,
-                        (l, Box::new(default_cacher.clone()) as Box<dyn IAssetCacher>),
-                    )
+                    (type_id, (l, default_cacher.clone()))
                 } else {
                     panic!("no cacher for loader for {type_id:?}");
                 }

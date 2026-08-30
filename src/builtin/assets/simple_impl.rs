@@ -1,10 +1,20 @@
 //! Simple utilities for quick-and-dirty asset management.
 //!
 //! See the [`asset`](crate::core::asset) module.
+//!
+//! This module contains 3 tools:
+//!
+//! - [`FsAccessor`]: an [`IAssetAccessor`] that reads from disk.
+//!
+//! - [`NaiveCacher`]: an [`IAssetCacher`] that caches every value that goes in
+//!   permanently.
+//!
+//! - [`ExtensionSwitcher`]: switches between any number of loaders/savers based
+//!   on the asset path.
 
 use std::{
     any::{Any, TypeId},
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     marker::PhantomData,
     path::{Component, Path, PathBuf},
     pin::Pin,
@@ -15,10 +25,7 @@ use elsa::sync::FrozenMap;
 
 use parking_lot::RwLock;
 
-use crate::core::asset::{
-    Asset, BytesError, DynAsset, DynOwnedAsset, IAssetAccessor, IAssetCacher, UpdateError,
-    base::AssetCacheContent,
-};
+use crate::core::asset::{base::AssetCacheContent, *};
 
 /// Describes how to read and write file asynchronously.
 pub trait AsyncFs: Sync + 'static {
@@ -42,8 +49,7 @@ pub struct FalseAsyncFs;
 impl AsyncFs for FalseAsyncFs {
     fn read_file<'a>(
         _path: &'a Path,
-    ) -> Pin<Box<dyn Future<Output = std::io::Result<Box<[u8]>>> + Send + 'a>>
-    {
+    ) -> Pin<Box<dyn Future<Output = std::io::Result<Box<[u8]>>> + Send + 'a>> {
         unimplemented!("FalseAsyncFs is intentionally unimplemented")
     }
 
@@ -242,6 +248,153 @@ impl<T: Any + Send + Sync> IAssetCacher for NaiveCacher<T> {
 }
 
 impl<T: Any + Send + Sync> Default for NaiveCacher<T> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// A saver/loader that switches between several others based on the extension
+/// of the asset path.
+///
+/// Take an image, for example. You can load and save it both as PNG or BMP.
+///
+/// It is recommended to register it with
+/// [`register_saver_loader`](AssetManagerBuilder::register_saver_loader).
+pub struct ExtensionSwitcher<T: Any + Send + Sync> {
+    loader_by_ext: HashMap<String, Box<dyn IAssetLoader>>,
+    saver_by_ext: HashMap<String, Box<dyn IAssetSaver>>,
+    _marker: PhantomData<T>,
+}
+
+impl<T: Any + Send + Sync> ExtensionSwitcher<T> {
+    /// Create an empty list of loaders and switchers
+    pub fn new() -> Self {
+        Self {
+            loader_by_ext: HashMap::new(),
+            saver_by_ext: HashMap::new(),
+            _marker: PhantomData,
+        }
+    }
+
+    /// Add a new loader.
+    ///
+    /// Panics if the given extension already has a loader set or if the loader
+    /// doesn't load the given type.
+    pub fn add_loader(&mut self, ext: impl Into<String>, loader: impl IAssetLoader) {
+        let ext = ext.into();
+        if self.loader_by_ext.contains_key(&ext) {
+            panic!("loader for `{ext}` already exists");
+        }
+
+        if !loader.loads(TypeId::of::<T>()) {
+            panic!("loader for `{ext}` does not load the expected type");
+        }
+
+        self.loader_by_ext.insert(ext, Box::new(loader));
+    }
+
+    /// Add a new saver.
+    ///
+    /// Panics if the given extension already has a saver set or if the saver
+    /// doesn't save the given type.
+    pub fn add_saver(&mut self, ext: impl Into<String>, saver: impl IAssetSaver) {
+        let ext = ext.into();
+        if self.saver_by_ext.contains_key(&ext) {
+            panic!("saver for `{ext}` already exists");
+        }
+
+        if !saver.saves(TypeId::of::<T>()) {
+            panic!("saver for `{ext}` does not save the expected type");
+        }
+
+        self.saver_by_ext.insert(ext, Box::new(saver));
+    }
+
+    /// Add both a loader and a saver.
+    ///
+    /// See [`Self::add_loader`] and [`Self::add_saver`] for important details.
+    pub fn add_loader_saver(
+        &mut self,
+        ext: impl Into<String>,
+        loader: impl IAssetLoader,
+        saver: impl IAssetSaver,
+    ) {
+        let ext = ext.into();
+        self.add_loader(ext.clone(), loader);
+        self.add_saver(ext, saver);
+    }
+}
+
+impl<T: Any + Send + Sync> SaverLoader for ExtensionSwitcher<T> {
+    fn split(self) -> (Self, Self) {
+        (
+            Self {
+                loader_by_ext: HashMap::new(),
+                saver_by_ext: self.saver_by_ext,
+                _marker: PhantomData,
+            },
+            Self {
+                loader_by_ext: self.loader_by_ext,
+                saver_by_ext: HashMap::new(),
+                _marker: PhantomData,
+            },
+        )
+    }
+}
+
+impl<T: Any + Send + Sync> IAssetSaver for ExtensionSwitcher<T> {
+    fn save_as_bytes(
+        &self,
+        asset_path: &str,
+        value: &dyn Any,
+    ) -> Result<Box<[u8]>, SaveAssetError> {
+        let value: &T = value.downcast_ref().ok_or(SaveAssetError::IncorrectType)?;
+
+        let ext = Path::new(asset_path)
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .ok_or_else(|| {
+                SaveAssetError::BadPath(format!("`{asset_path}` has an invalid extension"))
+            })?;
+
+        let saver = self.saver_by_ext.get(ext).ok_or_else(|| {
+            SaveAssetError::BadPath(format!("`{ext}` is not a tracked extension"))
+        })?;
+
+        saver.save_as_bytes(asset_path, value)
+    }
+
+    fn saves(&self, type_id: TypeId) -> bool {
+        type_id == TypeId::of::<T>()
+    }
+}
+
+impl<T: Any + Send + Sync> IAssetLoader for ExtensionSwitcher<T> {
+    fn load_from_bytes(
+        &self,
+        asset_path: &str,
+        bytes: &[u8],
+    ) -> Result<Box<dyn Any>, LoadAssetError> {
+        let ext = Path::new(asset_path)
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .ok_or_else(|| {
+                LoadAssetError::BadPath(format!("`{asset_path}` has an invalid extension"))
+            })?;
+
+        let loader = self.loader_by_ext.get(ext).ok_or_else(|| {
+            LoadAssetError::BadPath(format!("`{ext}` is not a tracked extension"))
+        })?;
+
+        loader.load_from_bytes(asset_path, bytes)
+    }
+
+    fn loads(&self, type_id: TypeId) -> bool {
+        type_id == TypeId::of::<T>()
+    }
+}
+
+impl<T: Any + Send + Sync> Default for ExtensionSwitcher<T> {
     fn default() -> Self {
         Self::new()
     }

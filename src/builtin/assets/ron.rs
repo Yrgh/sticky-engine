@@ -32,7 +32,11 @@ impl<T> Clone for RonSaveLoad<T> {
 }
 
 impl<T: Serialize + Any + Send + Sync> IAssetSaver for RonSaveLoad<T> {
-    fn save_as_bytes(&self, value: &dyn Any) -> Result<Box<[u8]>, SaveAssetError> {
+    fn save_as_bytes(
+        &self,
+        _asset_path: &str,
+        value: &dyn Any,
+    ) -> Result<Box<[u8]>, SaveAssetError> {
         let value: &T = value.downcast_ref().ok_or(SaveAssetError::IncorrectType)?;
         match ron::ser::to_string(value) {
             Ok(string) => Ok(string.into_bytes().into_boxed_slice()),
@@ -98,7 +102,11 @@ impl<T> Clone for RonSavePretty<T> {
 }
 
 impl<T: Serialize + Any + Send + Sync> IAssetSaver for RonSavePretty<T> {
-    fn save_as_bytes(&self, value: &dyn Any) -> Result<Box<[u8]>, SaveAssetError> {
+    fn save_as_bytes(
+        &self,
+        _asset_path: &str,
+        value: &dyn Any,
+    ) -> Result<Box<[u8]>, SaveAssetError> {
         let value: &T = value.downcast_ref().ok_or(SaveAssetError::IncorrectType)?;
         match ron::ser::to_string_pretty(value, self.config.clone()) {
             Ok(string) => Ok(string.into_bytes().into_boxed_slice()),

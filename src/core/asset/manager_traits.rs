@@ -70,10 +70,11 @@ pub enum LoadAssetError {
     #[error("the given asset does not match the loader's type")]
     /// Returned if the asset's path or bytes are indicative that there is a
     /// type mismatch.
-    ///
-    /// This could be produced if a .png file is given to a .jpeg loader, or a
-    /// header in the bytes does not match, for example.
     IncorrectType,
+    #[error("error in path: {0}")]
+    /// Returned if the given asset path had a problem, with a description of
+    /// what happened.
+    BadPath(String),
     #[error("utf8 decode error: {0}")]
     /// Returned if there is a string decode error
     Utf8(#[from] Utf8Error),
@@ -112,6 +113,10 @@ pub enum SaveAssetError {
     #[error("the given asset does not match the saver's type")]
     /// Returned if the given asset is not of the expected type.
     IncorrectType,
+    #[error("error in path: {0}")]
+    /// Returned if the given asset path had a problem, with a description of
+    /// what happened.
+    BadPath(String),
     #[error("{0}")]
     /// Any other error
     Other(anyhow::Error),
@@ -131,10 +136,18 @@ impl SaveAssetError {
 /// the config file for each saving mode.
 pub trait IAssetSaver: Any + Send + Sync {
     /// Serialize an asset as bytes
-    fn save_as_bytes(&self, value: &dyn Any) -> Result<Box<[u8]>, SaveAssetError>;
+    fn save_as_bytes(&self, asset_path: &str, value: &dyn Any) -> Result<Box<[u8]>, SaveAssetError>;
 
     /// Returns whether this asset saver can save the given type.
     fn saves(&self, type_id: TypeId) -> bool;
+}
+
+/// A type that is both a saver and a loader and can be split into halves for
+/// each.
+pub trait SaverLoader: IAssetSaver + IAssetLoader + Sized {
+    /// Create two versions of this type: one for saving (left) and loading
+    /// (right).
+    fn split(self) -> (Self, Self);
 }
 
 #[derive(Debug, Error)]
@@ -199,47 +212,42 @@ pub trait IAssetCacher: Any + Send + Sync {
     fn caches(&self, type_id: TypeId) -> bool;
 }
 
-/// Allows a cacher to be wrapped in [`Arc`] and handed around, in case you want
-/// to do cache management.
-impl<T: ?Sized + IAssetCacher> IAssetCacher for Arc<T> {
-    fn retrieve_asset_blocking(&self, asset_path: &str) -> Option<DynAsset> {
-        self.as_ref().retrieve_asset_blocking(asset_path)
-    }
+mod private { pub trait Sealed {} }
 
-    fn retrieve_asset_async<'a>(
-        &'a self,
-        asset_path: &'a str,
-    ) -> Pin<Box<dyn Future<Output = Option<DynAsset>> + Send + 'a>> {
-        self.as_ref().retrieve_asset_async(asset_path)
-    }
+/// Helper trait for types that can be converted to `Arc<dyn IAssetCacher`.
+pub trait IntoCacher: private::Sealed {
+    /// Convert this type into a cacher that can be stored.
+    fn into_cacher(self) -> Arc<dyn IAssetCacher>;
+}
 
-    fn update_asset_unlocking(
-        &self,
-        asset: DynOwnedAsset,
-    ) -> Result<DynAsset, (UpdateError, DynOwnedAsset)> {
-        self.as_ref().update_asset_unlocking(asset)
-    }
+impl<T: IAssetCacher + Sized> private::Sealed for T {}
 
-    fn update_asset_blocking(
-        &self,
-        asset: DynOwnedAsset,
-    ) -> Result<DynAsset, (UpdateError, DynOwnedAsset)> {
-        self.as_ref().update_asset_blocking(asset)
+impl<T: IAssetCacher + Sized> IntoCacher for T {
+    fn into_cacher(self) -> Arc<dyn IAssetCacher> {
+        Arc::new(self)
     }
+}
 
-    fn update_asset_async<'a>(
-        &'a self,
-        asset: DynOwnedAsset,
-    ) -> Pin<Box<dyn Future<Output = Result<DynAsset, (UpdateError, DynOwnedAsset)>> + Send + 'a>>
-    {
-        self.as_ref().update_asset_async(asset)
+impl private::Sealed for Box<dyn IAssetCacher> {}
+
+impl IntoCacher for Box<dyn IAssetCacher> {
+    fn into_cacher(self) -> Arc<dyn IAssetCacher> {
+        self.into()
     }
+}
 
-    fn release_asset_lock(&self, asset_path: &str) {
-        self.as_ref().release_asset_lock(asset_path);
+impl<T: IAssetCacher> private::Sealed for Arc<T> {}
+
+impl<T: IAssetCacher> IntoCacher for Arc<T> {
+    fn into_cacher(self) -> Arc<dyn IAssetCacher> {
+        self
     }
+}
 
-    fn caches(&self, type_id: TypeId) -> bool {
-        self.as_ref().caches(type_id)
+impl<T: IAssetCacher> private::Sealed for &Arc<T> {}
+
+impl<T: IAssetCacher> IntoCacher for &Arc<T> {
+    fn into_cacher(self) -> Arc<dyn IAssetCacher> {
+        self.clone()
     }
 }

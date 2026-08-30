@@ -36,7 +36,11 @@ where
     S::Src: Sized,
     C: Config + Sync + Clone,
 {
-    fn save_as_bytes(&self, value: &dyn Any) -> Result<Box<[u8]>, SaveAssetError> {
+    fn save_as_bytes(
+        &self,
+        _asset_path: &str,
+        value: &dyn Any,
+    ) -> Result<Box<[u8]>, SaveAssetError> {
         let src: &S::Src = value.downcast_ref().ok_or(SaveAssetError::IncorrectType)?;
 
         let size = S::size_of(src).map_err(SaveAssetError::other)?;
