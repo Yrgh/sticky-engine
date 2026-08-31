@@ -143,7 +143,7 @@ impl AssetManager {
 
         let loaded = loader.load_from_bytes(asset_path, &bytes)?;
 
-        let loaded = match loaded.downcast::<T>() {
+        let mut loaded = match loaded.downcast::<T>() {
             Ok(asset) => *asset,
             Err(_) => panic!("loader returned the wrong type"),
         };
@@ -216,7 +216,7 @@ impl AssetManager {
 
         let loaded = loader.load_from_bytes(asset_path, &bytes)?;
 
-        let loaded = match loaded.downcast::<T>() {
+        let mut loaded = match loaded.downcast::<T>() {
             Ok(asset) => *asset,
             Err(_) => panic!("loader returned the wrong type"),
         };

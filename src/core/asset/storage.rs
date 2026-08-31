@@ -49,12 +49,12 @@ impl Drop for Metadata {
 pub trait IAsset: Any + Send + Sync {
     /// Find all unresolved [`Asset`]s contained within and resolve them,
     /// blocking until completion.
-    fn resolve_blocking(&self, asset_manager: &AssetManager) -> Result<(), GetAssetError>;
+    fn resolve_blocking(&mut self, asset_manager: &AssetManager) -> Result<(), GetAssetError>;
 
     /// Find all unresolved [`Asset`]s contained within and resolve them
     /// asynchronously.
     fn resolve_async(
-        &self,
+        &mut self,
         asset_manager: &AssetManager,
     ) -> BoxedFuture<'_, Result<(), GetAssetError>>;
 }
