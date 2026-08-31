@@ -49,19 +49,19 @@ pub trait IAssetAccessor: Any + Send + Sync {
     /// Load bytes asynchronously.
     fn load_bytes_async<'a>(
         &'a self,
-        asset_path: &'a str,
+        asset_path: &'a Arc<str>,
     ) -> Pin<Box<dyn Future<Output = AccessorLoadBytesResult> + Send + 'a>>;
     /// Load bytes, blocking the thread until completion.
-    fn load_bytes_blocking(&self, asset_path: &str) -> AccessorLoadBytesResult;
+    fn load_bytes_blocking(&self, asset_path: &Arc<str>) -> AccessorLoadBytesResult;
 
     /// Save bytes asynchronously.
     fn save_bytes_async<'a>(
         &'a self,
-        asset_path: &'a str,
+        asset_path: &'a Arc<str>,
         bytes: &'a [u8],
     ) -> Pin<Box<dyn Future<Output = AccessorSaveBytesResult> + Send + 'a>>;
     /// Save bytes, blocking the thread until completion.
-    fn save_bytes_blocking(&self, asset_path: &str, bytes: &[u8]) -> AccessorSaveBytesResult;
+    fn save_bytes_blocking(&self, asset_path: &Arc<str>, bytes: &[u8]) -> AccessorSaveBytesResult;
 }
 
 #[derive(Error, Debug)]
@@ -99,7 +99,7 @@ pub trait IAssetLoader: Any + Send + Sync {
     /// Load an asset from its bytes, using the path as a hint if desired.
     fn load_from_bytes(
         &self,
-        asset_path: &str,
+        asset_path: &Arc<str>,
         bytes: &[u8],
     ) -> Result<Box<dyn Any>, LoadAssetError>;
 
@@ -136,7 +136,7 @@ impl SaveAssetError {
 /// the config file for each saving mode.
 pub trait IAssetSaver: Any + Send + Sync {
     /// Serialize an asset as bytes
-    fn save_as_bytes(&self, asset_path: &str, value: &dyn Any) -> Result<Box<[u8]>, SaveAssetError>;
+    fn save_as_bytes(&self, asset_path: &Arc<str>, value: &dyn Any) -> Result<Box<[u8]>, SaveAssetError>;
 
     /// Returns whether this asset saver can save the given type.
     fn saves(&self, type_id: TypeId) -> bool;
@@ -170,13 +170,13 @@ pub enum UpdateError {
 pub trait IAssetCacher: Any + Send + Sync {
     /// Return the asset if it is cached, lock the asset if it is not, blocking
     /// while the asset is locked.
-    fn retrieve_asset_blocking(&self, asset_path: &str) -> Option<DynAsset>;
+    fn retrieve_asset_blocking(&self, asset_path: &Arc<str>) -> Option<DynAsset>;
 
     /// Return the asset if it is cached, lock the asset if it is not, waiting
     /// while the asset is locked.
     fn retrieve_asset_async<'a>(
         &'a self,
-        asset_path: &'a str,
+        asset_path: &'a Arc<str>,
     ) -> Pin<Box<dyn Future<Output = Option<DynAsset>> + Send + 'a>>;
 
     /// Update the cached asset to point to a new value without waiting or
@@ -206,7 +206,7 @@ pub trait IAssetCacher: Any + Send + Sync {
     ) -> Pin<Box<dyn Future<Output = Result<DynAsset, (UpdateError, DynOwnedAsset)>> + Send + 'a>>;
 
     /// If the asset is locked, release the lock.
-    fn release_asset_lock(&self, asset_path: &str);
+    fn release_asset_lock(&self, asset_path: &Arc<str>);
 
     /// Returns whether the asset type is cached by this manager.
     fn caches(&self, type_id: TypeId) -> bool;

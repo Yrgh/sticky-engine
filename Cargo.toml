@@ -12,7 +12,7 @@ categories = ["game-development", "game-engines", "rendering", "rendering::engin
 members = ["macros"]
 
 [features]
-default = ["vulkan-renderer", "simple-asset-impls"]
+default = ["vulkan-renderer", "simple-asset-impls", "ron", "wincode"]
 nightly = []
 
 gpu-vulkan = ["dep:vulkano"]
@@ -20,8 +20,9 @@ vulkan-renderer = ["gpu-vulkan"]
 
 simple-asset-impls = []
 
+serde = ["dep:serde"]
 wincode = ["dep:wincode"]
-ron = ["dep:ron", "dep:serde"]
+ron = ["dep:ron", "serde"]
 
 [dependencies]
 rapier3d = "0.34.0"

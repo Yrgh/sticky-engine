@@ -24,7 +24,7 @@ mod manager_traits;
 pub use manager_traits::*;
 
 mod manager;
-pub use manager::*;
+pub use manager::{GlobalInterner, AssetManager, AssetManagerBuilder, GetAssetError, SetAssetError};
 
 mod storage;
 pub use storage::*;

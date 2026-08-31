@@ -3,6 +3,7 @@
 use std::{
     any::{Any, TypeId},
     marker::PhantomData,
+    sync::Arc,
 };
 
 use ron::ser::PrettyConfig;
@@ -34,7 +35,7 @@ impl<T> Clone for RonSaveLoad<T> {
 impl<T: Serialize + Any + Send + Sync> IAssetSaver for RonSaveLoad<T> {
     fn save_as_bytes(
         &self,
-        _asset_path: &str,
+        _asset_path: &Arc<str>,
         value: &dyn Any,
     ) -> Result<Box<[u8]>, SaveAssetError> {
         let value: &T = value.downcast_ref().ok_or(SaveAssetError::IncorrectType)?;
@@ -52,7 +53,7 @@ impl<T: Serialize + Any + Send + Sync> IAssetSaver for RonSaveLoad<T> {
 impl<T: for<'de> Deserialize<'de> + Any + Send + Sync> IAssetLoader for RonSaveLoad<T> {
     fn load_from_bytes(
         &self,
-        _asset_path: &str,
+        _asset_path: &Arc<str>,
         bytes: &[u8],
     ) -> Result<Box<dyn Any>, LoadAssetError> {
         let s = str::from_utf8(bytes)?;
@@ -104,7 +105,7 @@ impl<T> Clone for RonSavePretty<T> {
 impl<T: Serialize + Any + Send + Sync> IAssetSaver for RonSavePretty<T> {
     fn save_as_bytes(
         &self,
-        _asset_path: &str,
+        _asset_path: &Arc<str>,
         value: &dyn Any,
     ) -> Result<Box<[u8]>, SaveAssetError> {
         let value: &T = value.downcast_ref().ok_or(SaveAssetError::IncorrectType)?;

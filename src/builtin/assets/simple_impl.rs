@@ -14,7 +14,7 @@
 
 use std::{
     any::{Any, TypeId},
-    collections::{HashMap, HashSet},
+    collections::HashMap,
     marker::PhantomData,
     path::{Component, Path, PathBuf},
     pin::Pin,
@@ -22,8 +22,6 @@ use std::{
 };
 
 use elsa::sync::FrozenMap;
-
-use parking_lot::RwLock;
 
 use crate::core::asset::{base::AssetCacheContent, *};
 
@@ -81,8 +79,8 @@ impl<Fs: AsyncFs> FsAccessor<Fs> {
         &self.root
     }
 
-    fn resolve(&self, asset_path: &str) -> Result<PathBuf, BytesError> {
-        let path = Path::new(asset_path);
+    fn resolve(&self, asset_path: &Arc<str>) -> Result<PathBuf, BytesError> {
+        let path = Path::new(asset_path.as_ref());
         if path.is_absolute() || path.components().any(|c| matches!(c, Component::ParentDir)) {
             Err(BytesError::BadPath(Some(
                 "FsAccessor asset paths must be relative".to_string(),
@@ -96,24 +94,24 @@ impl<Fs: AsyncFs> FsAccessor<Fs> {
 impl<Fs: AsyncFs> IAssetAccessor for FsAccessor<Fs> {
     fn load_bytes_async<'a>(
         &'a self,
-        asset_path: &'a str,
+        asset_path: &'a Arc<str>,
     ) -> std::pin::Pin<Box<dyn Future<Output = Result<Box<[u8]>, BytesError>> + Send + 'a>> {
         Box::pin(async move { Ok(Fs::read_file(&self.resolve(asset_path)?).await?) })
     }
 
-    fn load_bytes_blocking(&self, asset_path: &str) -> Result<Box<[u8]>, BytesError> {
+    fn load_bytes_blocking(&self, asset_path: &Arc<str>) -> Result<Box<[u8]>, BytesError> {
         Ok(std::fs::read(self.resolve(asset_path)?)?.into())
     }
 
     fn save_bytes_async<'a>(
         &'a self,
-        asset_path: &'a str,
+        asset_path: &'a Arc<str>,
         bytes: &'a [u8],
     ) -> std::pin::Pin<Box<dyn Future<Output = Result<(), BytesError>> + Send + 'a>> {
         Box::pin(async move { Ok(Fs::write_file(&self.resolve(asset_path)?, bytes).await?) })
     }
 
-    fn save_bytes_blocking(&self, asset_path: &str, bytes: &[u8]) -> Result<(), BytesError> {
+    fn save_bytes_blocking(&self, asset_path: &Arc<str>, bytes: &[u8]) -> Result<(), BytesError> {
         let path = self.resolve(asset_path)?;
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
@@ -123,63 +121,44 @@ impl<Fs: AsyncFs> IAssetAccessor for FsAccessor<Fs> {
 }
 
 /// A naive implementation of an [`IAssetCacher`].
-pub struct NaiveCacher<T: Any + Send + Sync> {
+pub struct NaiveCacher<T: IAsset> {
     assets: FrozenMap<Arc<str>, Box<AssetCacheContent<T, ()>>>,
-    intern: RwLock<HashSet<Arc<str>>>,
 }
 
-impl<T: Any + Send + Sync> NaiveCacher<T> {
+impl<T: IAsset> NaiveCacher<T> {
     /// Returns an empty cache.
     pub fn new() -> Self {
         Self {
             assets: FrozenMap::new(),
-            intern: RwLock::new(HashSet::new()),
         }
     }
 
-    fn intern_str(&self, s: &str) -> Arc<str> {
-        if let Some(arc) = self.intern.read().get(s) {
-            return arc.clone();
-        }
-
-        let mut guard = self.intern.write();
-
-        if let Some(arc) = guard.get(s) {
-            arc.clone()
-        } else {
-            let arc: Arc<str> = s.into();
-            guard.insert(arc.clone());
-            arc
-        }
-    }
-
-    fn intern_and_get(&self, asset_path: &str) -> (Arc<str>, &AssetCacheContent<T, ()>) {
-        let path = self.intern_str(asset_path);
-        (
-            path.clone(),
-            self.assets.insert_with(path, Default::default),
-        )
+    fn get_or_insert(&self, asset_path: &Arc<str>) -> (Arc<str>, &AssetCacheContent<T, ()>) {
+        let inner = self
+            .assets
+            .insert_with(asset_path.clone(), Default::default);
+        (asset_path.clone(), inner)
     }
 }
 
-impl<T: Any + Send + Sync> IAssetCacher for NaiveCacher<T> {
-    fn retrieve_asset_blocking(&self, asset_path: &str) -> Option<DynAsset> {
-        let (path, inner) = self.intern_and_get(asset_path);
+impl<T: IAsset> IAssetCacher for NaiveCacher<T> {
+    fn retrieve_asset_blocking(&self, asset_path: &Arc<str>) -> Option<DynAsset> {
+        let (path, inner) = self.get_or_insert(asset_path);
         inner
             .blocking_get_or_lock()
-            .map(|(data, _)| Asset::from_parts(path, data, None).into_dyn())
+            .map(|(data, _)| Asset::new_resolved(path, data, None).into_dyn())
     }
 
     fn retrieve_asset_async<'a>(
         &'a self,
-        asset_path: &'a str,
+        asset_path: &'a Arc<str>,
     ) -> Pin<Box<dyn Future<Output = Option<DynAsset>> + Send + 'a>> {
         Box::pin(async move {
-            let (path, inner) = self.intern_and_get(asset_path);
+            let (path, inner) = self.get_or_insert(asset_path);
             inner
                 .async_get_or_lock()
                 .await
-                .map(|(data, _)| Asset::from_parts(path, data, None).into_dyn())
+                .map(|(data, _)| Asset::new_resolved(path, data, None).into_dyn())
         })
     }
 
@@ -187,7 +166,7 @@ impl<T: Any + Send + Sync> IAssetCacher for NaiveCacher<T> {
         &self,
         asset: DynOwnedAsset,
     ) -> Result<DynAsset, (UpdateError, DynOwnedAsset)> {
-        let (path, inner) = self.intern_and_get(asset.path());
+        let (path, inner) = self.get_or_insert(&GlobalInterner::intern(asset.path()));
 
         let data: Arc<T> = asset
             .downcast::<T>()
@@ -197,14 +176,14 @@ impl<T: Any + Send + Sync> IAssetCacher for NaiveCacher<T> {
 
         inner.update_and_unlock(Some((data.clone(), ())));
 
-        Ok(Asset::from_parts(path, data, None).into_dyn())
+        Ok(Asset::new_resolved(path, data, None).into_dyn())
     }
 
     fn update_asset_blocking(
         &self,
         asset: DynOwnedAsset,
     ) -> Result<DynAsset, (UpdateError, DynOwnedAsset)> {
-        let (path, inner) = self.intern_and_get(asset.path());
+        let (path, inner) = self.get_or_insert(&GlobalInterner::intern(asset.path()));
 
         let data: Arc<T> = asset
             .downcast::<T>()
@@ -214,7 +193,7 @@ impl<T: Any + Send + Sync> IAssetCacher for NaiveCacher<T> {
 
         inner.blocking_wait_and_update(Some((data.clone(), ())));
 
-        Ok(Asset::from_parts(path, data, None).into_dyn())
+        Ok(Asset::new_resolved(path, data, None).into_dyn())
     }
 
     fn update_asset_async<'a>(
@@ -223,7 +202,7 @@ impl<T: Any + Send + Sync> IAssetCacher for NaiveCacher<T> {
     ) -> Pin<Box<dyn Future<Output = Result<DynAsset, (UpdateError, DynOwnedAsset)>> + Send + 'a>>
     {
         Box::pin(async move {
-            let (path, inner) = self.intern_and_get(asset.path());
+            let (path, inner) = self.get_or_insert(&GlobalInterner::intern(asset.path()));
 
             let data: Arc<T> = asset
                 .downcast::<T>()
@@ -233,12 +212,12 @@ impl<T: Any + Send + Sync> IAssetCacher for NaiveCacher<T> {
 
             inner.async_wait_and_update(Some((data.clone(), ()))).await;
 
-            Ok(Asset::from_parts(path, data, None).into_dyn())
+            Ok(Asset::new_resolved(path, data, None).into_dyn())
         })
     }
 
-    fn release_asset_lock(&self, asset_path: &str) {
-        let (_, inner) = self.intern_and_get(asset_path);
+    fn release_asset_lock(&self, asset_path: &Arc<str>) {
+        let (_, inner) = self.get_or_insert(asset_path);
         inner.unlock();
     }
 
@@ -247,7 +226,7 @@ impl<T: Any + Send + Sync> IAssetCacher for NaiveCacher<T> {
     }
 }
 
-impl<T: Any + Send + Sync> Default for NaiveCacher<T> {
+impl<T: IAsset> Default for NaiveCacher<T> {
     fn default() -> Self {
         Self::new()
     }
@@ -260,13 +239,13 @@ impl<T: Any + Send + Sync> Default for NaiveCacher<T> {
 ///
 /// It is recommended to register it with
 /// [`register_saver_loader`](AssetManagerBuilder::register_saver_loader).
-pub struct ExtensionSwitcher<T: Any + Send + Sync> {
+pub struct ExtensionSwitcher<T: IAsset> {
     loader_by_ext: HashMap<String, Box<dyn IAssetLoader>>,
     saver_by_ext: HashMap<String, Box<dyn IAssetSaver>>,
     _marker: PhantomData<T>,
 }
 
-impl<T: Any + Send + Sync> ExtensionSwitcher<T> {
+impl<T: IAsset> ExtensionSwitcher<T> {
     /// Create an empty list of loaders and switchers
     pub fn new() -> Self {
         Self {
@@ -325,7 +304,7 @@ impl<T: Any + Send + Sync> ExtensionSwitcher<T> {
     }
 }
 
-impl<T: Any + Send + Sync> SaverLoader for ExtensionSwitcher<T> {
+impl<T: IAsset> SaverLoader for ExtensionSwitcher<T> {
     fn split(self) -> (Self, Self) {
         (
             Self {
@@ -342,15 +321,15 @@ impl<T: Any + Send + Sync> SaverLoader for ExtensionSwitcher<T> {
     }
 }
 
-impl<T: Any + Send + Sync> IAssetSaver for ExtensionSwitcher<T> {
+impl<T: IAsset> IAssetSaver for ExtensionSwitcher<T> {
     fn save_as_bytes(
         &self,
-        asset_path: &str,
+        asset_path: &Arc<str>,
         value: &dyn Any,
     ) -> Result<Box<[u8]>, SaveAssetError> {
         let value: &T = value.downcast_ref().ok_or(SaveAssetError::IncorrectType)?;
 
-        let ext = Path::new(asset_path)
+        let ext = Path::new(asset_path.as_ref())
             .extension()
             .and_then(|ext| ext.to_str())
             .ok_or_else(|| {
@@ -369,13 +348,13 @@ impl<T: Any + Send + Sync> IAssetSaver for ExtensionSwitcher<T> {
     }
 }
 
-impl<T: Any + Send + Sync> IAssetLoader for ExtensionSwitcher<T> {
+impl<T: IAsset> IAssetLoader for ExtensionSwitcher<T> {
     fn load_from_bytes(
         &self,
-        asset_path: &str,
+        asset_path: &Arc<str>,
         bytes: &[u8],
     ) -> Result<Box<dyn Any>, LoadAssetError> {
-        let ext = Path::new(asset_path)
+        let ext = Path::new(asset_path.as_ref())
             .extension()
             .and_then(|ext| ext.to_str())
             .ok_or_else(|| {
@@ -394,7 +373,7 @@ impl<T: Any + Send + Sync> IAssetLoader for ExtensionSwitcher<T> {
     }
 }
 
-impl<T: Any + Send + Sync> Default for ExtensionSwitcher<T> {
+impl<T: IAsset> Default for ExtensionSwitcher<T> {
     fn default() -> Self {
         Self::new()
     }

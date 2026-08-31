@@ -3,6 +3,7 @@
 use std::{
     any::{Any, TypeId},
     marker::PhantomData,
+    sync::Arc,
 };
 
 use wincode::{SchemaRead, SchemaWrite, config::Config, io::Writer};
@@ -32,13 +33,13 @@ impl<T, C: Config> Clone for WincodeSaveLoad<T, C> {
 
 impl<S, C> IAssetSaver for WincodeSaveLoad<S, C>
 where
-    S: SchemaWrite<C> + Any + Sync,
+    S: SchemaWrite<C> + Any + Send + Sync,
     S::Src: Sized,
-    C: Config + Sync + Clone,
+    C: Config + Send + Sync + Clone,
 {
     fn save_as_bytes(
         &self,
-        _asset_path: &str,
+        _asset_path: &Arc<str>,
         value: &dyn Any,
     ) -> Result<Box<[u8]>, SaveAssetError> {
         let src: &S::Src = value.downcast_ref().ok_or(SaveAssetError::IncorrectType)?;
@@ -58,13 +59,13 @@ where
 
 impl<S, C> IAssetLoader for WincodeSaveLoad<S, C>
 where
-    S: for<'de> SchemaRead<'de, C> + Any + Sync,
+    S: for<'de> SchemaRead<'de, C> + Any + Send + Sync,
     for<'de> <S as SchemaRead<'de, C>>::Dst: Sized + Any,
-    C: Config + Sync + Clone,
+    C: Config + Send + Sync + Clone,
 {
     fn load_from_bytes(
         &self,
-        _asset_path: &str,
+        _asset_path: &Arc<str>,
         bytes: &[u8],
     ) -> Result<Box<dyn Any>, LoadAssetError> {
         match S::get(bytes) {

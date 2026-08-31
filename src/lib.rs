@@ -67,9 +67,14 @@
 //! - **`vulkan-renderer`**: adds a default renderer. Requires `gpu-vulkan`.
 //!   Enabled by default.
 //! 
-//! - **`simple-asset-impls`**:: adds a default
-//!   [`IAssetCacher`](core::asset::IAssetCacher) and
-//!   [`IAssetAccessor`](core::asset::IAssetAccessor)
+//! - **`simple-asset-impls`**: adds tools for quick integration of the
+//!   [`AssetManager`](core::asset::AssetManager). Enabled by default.
+//! 
+//! - **`serde`**: adds a `serde` impl for [`Asset`](core::asset::Asset).
+//! 
+//! - **`ron`**: adds asset loaders and savers for `ron`. Requires `serde`.
+//! 
+//! - **`wincode`**: adds asset loaders and a schema for `Asset`
 
 #![warn(clippy::all)]
 #![allow(clippy::type_complexity)]

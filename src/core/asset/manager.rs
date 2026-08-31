@@ -1,6 +1,7 @@
 use std::{
     any::{Any, TypeId, type_name},
-    collections::{HashMap, HashSet, hash_map::Entry},
+    collections::{HashMap, hash_map::Entry},
+    sync::LazyLock,
     sync::Arc,
 };
 
@@ -27,9 +28,6 @@ pub enum GetAssetError {
     #[error("mismatch between cached type and expected type")]
     /// Returned if the cached asset has a different type than the requested one.
     CachedMismatch,
-    #[error("bad implementation")]
-    /// Returned if one of the tools in the chain gave an unexpected result.
-    BadImpl,
 }
 
 #[derive(Debug, Error)]
@@ -47,20 +45,46 @@ pub enum SetAssetError {
     #[error("no loader for asset type")]
     /// Returned if the saver for the asset type was not set
     NoSaver,
-    #[error("bad implementation")]
-    /// Returned if one of the tools in the chain gave an unexpected result.
-    BadImpl,
+}
+
+/// A global string interner for asset paths.
+///
+/// All asset paths are sent into this pool, reducing allocations application-wide. Y
+pub struct GlobalInterner {
+    inner: RwLock<std::collections::HashSet<Arc<str>>>,
+}
+
+static INTERNER: LazyLock<GlobalInterner> = LazyLock::new(|| GlobalInterner {
+    inner: RwLock::new(std::collections::HashSet::new()),
+});
+
+impl GlobalInterner {
+    /// Intern a string, returning a shared [`Arc<str>`].
+    ///
+    /// If the string has been interned before, the existing [`Arc<str>`]
+    /// is returned. Otherwise, a new allocation is made and stored.
+    pub fn intern(s: &str) -> Arc<str> {
+        if let Some(arc) = INTERNER.inner.read().get(s) {
+            return arc.clone();
+        }
+
+        let mut guard = INTERNER.inner.write();
+
+        if let Some(arc) = guard.get(s) {
+            arc.clone()
+        } else {
+            let arc: Arc<str> = s.into();
+            guard.insert(arc.clone());
+            arc
+        }
+    }
 }
 
 /// An asset manager that can be used to save and load various assets.
 pub struct AssetManager {
-    // I'm concerned about Box<(inside) Arc<dyn IAssetCacher>>. Should I just
-    // use Arc here in the first place?
     loaders_cachers: HashMap<TypeId, (Box<dyn IAssetLoader>, Arc<dyn IAssetCacher>)>,
     savers: HashMap<TypeId, Box<dyn IAssetSaver>>,
     accessor: Box<dyn IAssetAccessor>,
-    // For non-cached, saved items
-    orphan_intern: RwLock<HashSet<Arc<str>>>,
 }
 
 const _: () = {
@@ -80,20 +104,21 @@ impl AssetManager {
         }
     }
 
-    /// Get an asset from cache or do a blocking load from disk.
-    pub fn get_asset_blocking<T: Any + Sized + Send + Sync>(
+    pub(crate) fn get_asset_blocking_dyn<T: IAsset + Sized>(
         &self,
-        asset_path: &str,
-    ) -> Result<Asset<T>, GetAssetError> {
-        let Some((loader, cacher)) = self.loaders_cachers.get(&TypeId::of::<T>()) else {
+        asset_path: &Arc<str>,
+    ) -> Result<DynAsset, GetAssetError> {
+        let type_id = TypeId::of::<T>();
+        let Some((loader, cacher)) = self.loaders_cachers.get(&type_id) else {
             return Err(GetAssetError::NoLoader);
         };
 
         // Check cache
         if let Some(cached) = cacher.retrieve_asset_blocking(asset_path) {
-            match cached.downcast::<T>() {
-                Ok(asset) => return Ok(asset),
-                Err(_) => return Err(GetAssetError::CachedMismatch),
+            if cached.is(type_id) {
+                return Ok(cached);
+            } else {
+                return Err(GetAssetError::CachedMismatch);
             }
         }
 
@@ -120,10 +145,12 @@ impl AssetManager {
 
         let loaded = match loaded.downcast::<T>() {
             Ok(asset) => *asset,
-            Err(_) => return Err(GetAssetError::BadImpl),
+            Err(_) => panic!("loader returned the wrong type"),
         };
 
-        let owned = DynOwnedAsset::from_owned(OwnedAsset::new(asset_path, loaded));
+        loaded.resolve_blocking(self)?;
+        
+        let owned = DynOwnedAsset::from_owned(OwnedAsset::new(asset_path.as_ref(), loaded));
 
         let asset = match cacher.update_asset_unlocking(owned) {
             Ok(asset) => asset,
@@ -132,27 +159,39 @@ impl AssetManager {
 
         asset_unlocker.on_drop = None;
 
+        Ok(asset)
+    }
+
+    /// Get an asset from cache or do a blocking load from disk.
+    pub fn get_asset_blocking<T: IAsset + Sized>(
+        &self,
+        asset_path: &str,
+    ) -> Result<Asset<T>, GetAssetError> {
+        let path = GlobalInterner::intern(asset_path);
+        let asset = self.get_asset_blocking_dyn::<T>(&path)?;
+
         let Ok(asset) = asset.downcast() else {
-            return Err(GetAssetError::BadImpl);
+            panic!("loader or cacher returned the wrong type");
         };
 
         Ok(asset)
     }
 
-    /// Get an asset from cache or do an async load from disk.
-    pub async fn get_asset_async<T: Any + Sized + Send + Sync>(
+    pub(crate) async fn get_asset_async_dyn<T: IAsset + Sized>(
         &self,
-        asset_path: &str,
-    ) -> Result<Asset<T>, GetAssetError> {
-        let Some((loader, cacher)) = self.loaders_cachers.get(&TypeId::of::<T>()) else {
+        asset_path: &Arc<str>,
+    ) -> Result<DynAsset, GetAssetError> {
+        let type_id = TypeId::of::<T>();
+        let Some((loader, cacher)) = self.loaders_cachers.get(&type_id) else {
             return Err(GetAssetError::NoLoader);
         };
 
         // Check cache
         if let Some(cached) = cacher.retrieve_asset_async(asset_path).await {
-            match cached.downcast::<T>() {
-                Ok(asset) => return Ok(asset),
-                Err(_) => return Err(GetAssetError::CachedMismatch),
+            if cached.is(type_id) {
+                return Ok(cached);
+            } else {
+                return Err(GetAssetError::CachedMismatch);
             }
         }
 
@@ -179,10 +218,12 @@ impl AssetManager {
 
         let loaded = match loaded.downcast::<T>() {
             Ok(asset) => *asset,
-            Err(_) => return Err(GetAssetError::BadImpl),
+            Err(_) => panic!("loader returned the wrong type"),
         };
 
-        let owned = DynOwnedAsset::from_owned(OwnedAsset::new(asset_path, loaded));
+        loaded.resolve_async(self).await?;
+
+        let owned = DynOwnedAsset::from_owned(OwnedAsset::new(asset_path.as_ref(), loaded));
 
         let asset = match cacher.update_asset_unlocking(owned) {
             Ok(asset) => asset,
@@ -190,32 +231,27 @@ impl AssetManager {
         };
 
         asset_unlocker.on_drop = None;
+        
+        Ok(asset)
+    }
+
+    /// Get an asset from cache or do an async load from disk.
+    pub async fn get_asset_async<T: IAsset + Sized>(
+        &self,
+        asset_path: &str,
+    ) -> Result<Asset<T>, GetAssetError> {
+        let path = GlobalInterner::intern(asset_path);
+        let asset = self.get_asset_async_dyn::<T>(&path).await?;
 
         let Ok(asset) = asset.downcast() else {
-            return Err(GetAssetError::BadImpl);
+            panic!("loader or cacher returned the wrong type");
         };
 
         Ok(asset)
     }
 
-    fn intern_str(&self, s: &str) -> Arc<str> {
-        if let Some(arc) = self.orphan_intern.read().get(s) {
-            return arc.clone();
-        }
-
-        let mut guard = self.orphan_intern.write();
-
-        if let Some(arc) = guard.get(s) {
-            arc.clone()
-        } else {
-            let arc: Arc<str> = s.into();
-            guard.insert(arc.clone());
-            arc
-        }
-    }
-
     /// Set and save an asset in cache and on disk, blocking until completion.
-    pub fn set_asset_blocking<T: Any + Sized + Send + Sync>(
+    pub fn set_asset_blocking<T: IAsset + Sized>(
         &self,
         asset: OwnedAsset<T>,
     ) -> Result<Asset<T>, SetAssetError> {
@@ -231,25 +267,26 @@ impl AssetManager {
 
             let asset: Asset<T> = match asset.downcast() {
                 Ok(asset) => asset,
-                Err(_) => return Err(SetAssetError::BadImpl),
+                Err(_) => panic!("cacher returned the wrong type"),
             };
 
             asset
         } else {
-            let path = self.intern_str(asset.path());
+            let path = GlobalInterner::intern(asset.path());
 
-            Asset::from_parts(path, asset.into_inner().into(), None)
+            Asset::new_resolved(path, asset.into_inner().into(), None)
         };
 
-        let bytes = saver.save_as_bytes(asset.path(), asset.as_ref())?;
+        let path = GlobalInterner::intern(asset.path());
+        let bytes = saver.save_as_bytes(&path, asset.as_ref())?;
 
-        self.accessor.save_bytes_blocking(asset.path(), &bytes)?;
+        self.accessor.save_bytes_blocking(&path, &bytes)?;
 
         Ok(asset)
     }
 
     /// Set and save an asset in cache and on disk, asynchronously.
-    pub async fn set_asset_async<T: Any + Sized + Send + Sync>(
+    pub async fn set_asset_async<T: IAsset + Sized>(
         &self,
         asset: OwnedAsset<T>,
     ) -> Result<Asset<T>, SetAssetError> {
@@ -268,19 +305,20 @@ impl AssetManager {
 
             let asset: Asset<T> = match asset.downcast() {
                 Ok(asset) => asset,
-                Err(_) => return Err(SetAssetError::BadImpl),
+                Err(_) => panic!("cacher returned the wrong type"),
             };
 
             asset
         } else {
-            let path = self.intern_str(asset.path());
+            let path = GlobalInterner::intern(asset.path());
 
-            Asset::from_parts(path, asset.into_inner().into(), None)
+            Asset::new_resolved(path, asset.into_inner().into(), None)
         };
 
-        let bytes = saver.save_as_bytes(asset.path(), asset.as_ref())?;
+        let path = GlobalInterner::intern(asset.path());
+        let bytes = saver.save_as_bytes(&path, asset.as_ref())?;
 
-        self.accessor.save_bytes_async(asset.path(), &bytes).await?;
+        self.accessor.save_bytes_async(&path, &bytes).await?;
 
         Ok(asset)
     }
@@ -471,7 +509,6 @@ impl AssetManagerBuilder {
             loaders_cachers,
             savers: self.savers,
             accessor,
-            orphan_intern: RwLock::new(HashSet::new()),
         })
     }
 }
