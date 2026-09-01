@@ -109,7 +109,7 @@ pub fn slot_def_inner(attr: TokenStream1, input: TokenStream1) -> TokenStream1 {
             #[doc = #id_doc]
             #visibility1 struct #slot_id_name {
                 slot: SlotIndex,
-                lidx: #engine_crate::core::level::LevelIndex,
+                lidx: #engine_crate::core::level::LevelId,
                 tyid: ::std::any::TypeId,
                 conv: &'static #engine_crate::core::relations::Convert<dyn super::#slot_name>,
             }
@@ -148,7 +148,7 @@ pub fn slot_def_inner(attr: TokenStream1, input: TokenStream1) -> TokenStream1 {
 
                 unsafe fn from_parts(
                     slot: SlotIndex,
-                    lidx: #engine_crate::core::level::LevelIndex,
+                    lidx: #engine_crate::core::level::LevelId,
                     tyid: ::std::any::TypeId,
                 ) -> Self where Self: Sized {
                     Self {
@@ -161,7 +161,7 @@ pub fn slot_def_inner(attr: TokenStream1, input: TokenStream1) -> TokenStream1 {
                     }
                 }
 
-                fn level_id(&self) -> #engine_crate::core::level::LevelIndex {
+                fn level_id(&self) -> #engine_crate::core::level::LevelId {
                     self.lidx
                 }
 

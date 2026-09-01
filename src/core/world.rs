@@ -4,27 +4,31 @@
 //! non-blocking interior mutability, meaning the [`World`] cannot be shared across threads. The
 //! [`World`] contains all [`Level`]s, [`IWindow`]s, and Components.
 use std::{
-    cell::{Cell, Ref, RefCell, RefMut, UnsafeCell}, collections::VecDeque, rc::Rc, sync::Arc, time::Duration,
+    cell::{Cell, Ref, RefCell, RefMut, UnsafeCell},
+    collections::VecDeque,
+    rc::Rc,
+    sync::Arc,
+    time::Duration,
 };
-
-use anyhow::Result as AResult;
 
 use thiserror::Error;
 
 use winit::{
-    event::WindowEvent,
-    event_loop::ActiveEventLoop,
-    window::{Window, WindowAttributes},
+    event::WindowEvent, event_loop::ActiveEventLoop, window::{Window, WindowAttributes},
 };
 
 use crate::core::{
-    asset::AssetManager, gpu_api::{GpuApi, IGpuApi, IRenderer}, level::{Level, LevelIndex, LevelIndexOwned}, util::gen_slot_vec::{RefCellGenSlotVec, SlotIndex}, window::{IWindowBoth, RootWindow, WindowId, WindowIdOwned},
+    asset::AssetManager,
+    gpu_api::{GpuApi, IGpuApi, IRenderer},
+    level::{Level, LevelId, LevelIdOwned},
+    util::gen_slot_vec::{RefCellGenSlotVec, SlotIndex},
+    window::{IWindowBoth, RootWindow, WindowId, WindowIdOwned},
 };
 
 use crate::core::{util::sentinel::SentinelMaxU32, window::IWindow};
 
 enum WorldAction {
-    DeleteLevel(LevelIndexOwned),
+    DeleteLevel(LevelIdOwned),
     DeleteWindow(WindowIdOwned),
 }
 
@@ -44,10 +48,10 @@ pub struct World {
     stable_rate: Cell<Duration>,
     min_idle_delay: Cell<Duration>,
 
-    windows: RefCellGenSlotVec<(LevelIndexOwned, Box<dyn IWindowBoth>)>,
+    windows: RefCellGenSlotVec<(LevelIdOwned, Box<dyn IWindowBoth>)>,
 
     main_window: Cell<Option<WindowId>>,
-    main_level: Cell<Option<LevelIndex>>,
+    main_level: Cell<Option<LevelId>>,
 
     active_event_loop: Cell<*const ActiveEventLoop>,
 
@@ -215,7 +219,7 @@ impl World {
     ///
     /// Note, the `Level` will be inactive, so make sure to call
     /// [`Level::set_active`].
-    pub fn create_level(&self) -> LevelIndexOwned {
+    pub fn create_level(&self) -> LevelIdOwned {
         let i: u32 = self
             .levels
             .count()
@@ -243,25 +247,25 @@ impl World {
             let g = s.0;
             let LevelStorage::Vacant(new_head) = std::mem::replace(
                 &mut s.1,
-                LevelStorage::Occupied(Level::new(LevelIndex(head, g))),
+                LevelStorage::Occupied(Level::new(LevelId(head, g))),
             ) else {
                 unreachable!()
             };
 
             self.level_free_head.set(new_head);
 
-            LevelIndexOwned(head, s.0)
+            LevelIdOwned(head, s.0)
         } else {
             self.levels.push(UnsafeCell::new((
                 0,
-                LevelStorage::Occupied(Level::new(LevelIndex(i, 0))),
+                LevelStorage::Occupied(Level::new(LevelId(i, 0))),
             )));
-            LevelIndexOwned(i, 0)
+            LevelIdOwned(i, 0)
         }
     }
 
     /// Returns a reference to a [`Level`].
-    pub fn get_level(&self, level: LevelIndex) -> Option<&Level> {
+    pub fn get_level(&self, level: LevelId) -> Option<&Level> {
         let (g, s) = unsafe { self.levels.get(level.0 as usize)?.get().as_ref_unchecked() };
         if *g == level.1
             && let LevelStorage::Occupied(l) = s
@@ -273,7 +277,7 @@ impl World {
     }
 
     /// Destroy a [`Level`] using its owning index.
-    pub fn destroy_level(&self, level: LevelIndexOwned) {
+    pub fn destroy_level(&self, level: LevelIdOwned) {
         self.action_queue
             .borrow_mut()
             .push_back(WorldAction::DeleteLevel(level));
@@ -322,6 +326,8 @@ impl World {
         let ael = self
             .active_event_loop()
             .ok_or(CreateRootWindowError::OutsideEventLoop)?;
+
+        // Will not fail because world needs main thread access
         let window = ael.create_window(attrs)?;
 
         self.insert_window(self.create_level(), move |id, level, self_| {
@@ -347,8 +353,8 @@ impl World {
     /// Mutably borrows the destination window's storage slot.
     fn insert_window<E>(
         &self,
-        level: LevelIndexOwned,
-        build: impl FnOnce(WindowId, LevelIndex, &Self) -> Result<Box<dyn IWindowBoth>, E>,
+        level: LevelIdOwned,
+        build: impl FnOnce(WindowId, LevelId, &Self) -> Result<Box<dyn IWindowBoth>, E>,
     ) -> Result<WindowIdOwned, E> {
         let handle = level.handle();
         let slot = self.windows.reserve();
@@ -520,8 +526,8 @@ impl World {
 
     /// Switches the [`Level`] bound to a given [`IWindow`].
     ///
-    /// If the window is not found, returns `Err` with the given [`LevelIndexOwned`]. If the window
-    /// is found, returns the `LevelIndexOwned` of the replaced `Level`.
+    /// If the window is not found, returns `Err` with the given [`LevelIdOwned`]. If the window
+    /// is found, returns the `LevelIdOwned` of the replaced `Level`.
     ///
     /// # Borrows
     ///
@@ -530,8 +536,8 @@ impl World {
     pub fn switch_window_level(
         &self,
         window: WindowId,
-        level: LevelIndexOwned,
-    ) -> Result<LevelIndexOwned, LevelIndexOwned> {
+        level: LevelIdOwned,
+    ) -> Result<LevelIdOwned, LevelIdOwned> {
         let new_handle = level.handle();
 
         let old_level = {
@@ -564,6 +570,14 @@ impl World {
     }
 }
 
+#[derive(Error, Debug)]
+pub(crate) enum CompleteInitError {
+    #[error("failed to initialize renderer: {0}")]
+    RendererInitError(anyhow::Error),
+    #[error("failed to create root window: {0}")]
+    MainWindowError(CreateRootWindowError)
+}
+
 impl World {
     /// Create a new builder.
     pub fn builder() -> WorldBuilder {
@@ -578,19 +592,23 @@ impl World {
         }
     }
 
-    pub(crate) fn complete_init(&mut self, builder: &mut WorldBuilder) -> AResult<()> {
+    pub(crate) fn complete_init(
+        &mut self,
+        builder: &mut WorldBuilder,
+    ) -> Result<(), CompleteInitError> {
         if let GpuCreateMode::Renderer(f) = &mut builder.gpu_create_mode {
             let f = std::mem::replace(f, Box::new(|_| panic!("complete_init called twice")));
             let (renderer, gpu_api) = f(self
                 .active_event_loop()
-                .expect("complete_init called outside of event loop"))?;
+                .expect("complete_init called outside of event loop"))
+            .map_err(CompleteInitError::RendererInitError)?;
 
             self.renderer = Some(renderer);
             self.gpu_api = Some(gpu_api);
         }
 
         if let MainMode::Window = &builder.main_mode {
-            let window = self.create_root_window(Window::default_attributes())?;
+            let window = self.create_root_window(Window::default_attributes()).map_err(CompleteInitError::MainWindowError)?;
             self.main_window.set(Some(window.handle()));
             self.main_level.set(Some(
                 self.get_window(window.handle())
@@ -611,7 +629,7 @@ pub(crate) enum MainMode {
 }
 
 pub(crate) type RendererCreateFn =
-    dyn FnOnce(&ActiveEventLoop) -> AResult<(Rc<dyn IRenderer>, GpuApi)>;
+    dyn FnOnce(&ActiveEventLoop) -> anyhow::Result<(Rc<dyn IRenderer>, GpuApi)>;
 
 pub(crate) enum GpuCreateMode {
     Dont,
@@ -685,7 +703,7 @@ impl WorldBuilder {
     }
 
     /// Set the [`AssetManager`] the [`World`] will own.
-    /// 
+    ///
     /// You must set the asset manager, or your program will panic.
     pub fn with_asset_manager(&mut self, asset_manager: Arc<AssetManager>) -> &mut Self {
         self.asset_manager = Some(asset_manager);
@@ -752,9 +770,9 @@ impl WorldBuilder {
     ///
     /// If you are writing tests, this is a better option, but it is highly
     /// recommended to run the full engine.
-    /// 
+    ///
     /// # Panics
-    /// 
+    ///
     /// If the asset manager isn't set.
     pub fn build(self) -> World {
         self.finish_ish()

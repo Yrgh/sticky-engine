@@ -1,6 +1,6 @@
 //! Inherit properties of Components, mainly [`IComponent`]
 
-use crate::core::{ComponentGetError, ComponentGetMutError, level::LevelIndex, world::World};
+use crate::core::{ComponentGetError, ComponentGetMutError, level::LevelId, world::World};
 
 use super::*;
 
@@ -12,12 +12,12 @@ pub enum ComponentParent {
     Component(DynComponentId),
     /// The Component is top-level within the given
     /// [`Level`](crate::core::level::Level).
-    Level(LevelIndex),
+    Level(LevelId),
 }
 
 impl ComponentParent {
-    /// Returns the [`LevelIndex`] of a Component's parent.
-    pub fn level_id(&self) -> LevelIndex {
+    /// Returns the [`LevelId`] of a Component's parent.
+    pub fn level_id(&self) -> LevelId {
         match self {
             ComponentParent::Component(dci) => dci.level_id(),
             ComponentParent::Level(lidx) => *lidx,
@@ -31,8 +31,8 @@ impl<T: Into<DynComponentId>> From<T> for ComponentParent {
     }
 }
 
-impl From<LevelIndex> for ComponentParent {
-    fn from(value: LevelIndex) -> Self {
+impl From<LevelId> for ComponentParent {
+    fn from(value: LevelId) -> Self {
         ComponentParent::Level(value)
     }
 }

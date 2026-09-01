@@ -1,12 +1,6 @@
-//! The default renderer, built on top of the [`api_vk`](super::api_vk) GPU API.
+//! The default renderer, built on top of the [`api_vk`](crate::builtin::api_vk) GPU API.
 
-use std::{
-    any::Any,
-    cell::Cell,
-    rc::Rc,
-    sync::Arc,
-    time::Duration,
-};
+use std::{any::Any, cell::Cell, rc::Rc, sync::Arc, time::Duration};
 
 use anyhow::{Context, Result as AResult};
 
@@ -24,18 +18,15 @@ use vulkano::{
     swapchain::{Surface, Swapchain, SwapchainPresentInfo, acquire_next_image},
     sync::{GpuFuture, now},
 };
-use winit::{
-    dpi::PhysicalSize,
-    event_loop::ActiveEventLoop,
-    window::Window as OsWindow,
-};
+use winit::{dpi::PhysicalSize, event_loop::ActiveEventLoop, window::Window as OsWindow};
 
-use crate::core::{
-    gpu_api::{BoxedInstructions, GpuApi, IRenderer, ISurface, WindowRenderInstructions},
-    rendering::RenderingQueue,
+use crate::{
+    builtin::api_vk::{FinalPresentFuture, VkContext},
+    core::{
+        gpu_api::{BoxedInstructions, GpuApi, IRenderer, ISurface, WindowRenderInstructions},
+        rendering::RenderingQueue,
+    },
 };
-
-use super::api_vk::{FinalPresentFuture, VkContext};
 
 /// A swapchain image acquired non-blockingly, staged for presentation.
 struct AcquiredSlot {
@@ -322,7 +313,7 @@ fn build_root(
 
 /// A renderer that draws windows using [`vulkano`].
 ///
-/// It is created via [`WorldBuilder::with_renderer`], pairing a
+/// It is created via `WorldBuilder::with_renderer`, pairing a
 /// [`VulkanApi`](super::api_vk::VulkanApi) GPU API with this renderer.
 pub struct VkRenderer {
     ctx: Rc<VkContext>,

@@ -23,7 +23,11 @@ use std::{
 
 use elsa::sync::FrozenMap;
 
-use crate::core::asset::{base::AssetCacheContent, *};
+use crate::core::asset::{
+    base::AssetCacheContent,
+    traits::{BytesError, LoadAssetError, SaveAssetError, SaverLoader, UpdateError},
+    *,
+};
 
 /// Describes how to read and write file asynchronously.
 pub trait AsyncFs: Sync + 'static {
@@ -236,9 +240,6 @@ impl<T: IAsset> Default for NaiveCacher<T> {
 /// of the asset path.
 ///
 /// Take an image, for example. You can load and save it both as PNG or BMP.
-///
-/// It is recommended to register it with
-/// [`register_saver_loader`](AssetManagerBuilder::register_saver_loader).
 pub struct ExtensionSwitcher<T: IAsset> {
     loader_by_ext: HashMap<String, Box<dyn IAssetLoader>>,
     saver_by_ext: HashMap<String, Box<dyn IAssetSaver>>,

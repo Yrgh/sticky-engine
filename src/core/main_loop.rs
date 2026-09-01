@@ -13,9 +13,10 @@ use std::{
     time::{Duration, Instant},
 };
 
-use anyhow::{Result as AResult, bail};
+use thiserror::Error;
 use winit::{
     application::ApplicationHandler,
+    error::{EventLoopError, OsError},
     event::WindowEvent,
     event_loop::{ActiveEventLoop, EventLoop},
 };
@@ -24,7 +25,7 @@ use futures::channel::{mpsc, oneshot};
 
 use crate::core::{
     component::ISlotId,
-    level::LevelIndex,
+    level::LevelId,
     world::{World, WorldBuilder},
 };
 
@@ -58,6 +59,14 @@ struct MainLoop {
     last_idle_time: Instant,
 }
 
+#[derive(Debug, Error)]
+enum RenderError {
+    #[error("renderer error: {0}")]
+    RendererError(anyhow::Error),
+    #[error("cyclic dependencies between Levels")]
+    LevelDependencyCycle,
+}
+
 impl MainLoop {
     fn idle(&mut self, timeout: Option<Duration>) -> bool {
         let start = Instant::now();
@@ -89,7 +98,7 @@ impl MainLoop {
         false
     }
 
-    fn render_idle(&mut self) -> AResult<()> {
+    fn render_idle(&mut self) -> Result<(), RenderError> {
         let _span = tracing::debug_span!("engine_render").entered();
 
         // Step 1: Figure out the order to render in.
@@ -104,17 +113,19 @@ impl MainLoop {
             .world
             .iter_levels()
             .filter(|l| l.is_active())
-            .map(|l| -> AResult<_> {
+            .map(|l| -> Result<_, RenderError> {
                 let rq = l.get_rendering_queue();
                 let deps = rq.search_dependencies();
-                let (lvl_instructions, win_instructions) = renderer.render_level(&rq)?;
+                let (lvl_instructions, win_instructions) = renderer
+                    .render_level(&rq)
+                    .map_err(RenderError::RendererError)?;
                 Ok((l.id(), (deps, lvl_instructions, win_instructions)))
             })
-            .collect::<AResult<HashMap<_, _>>>()?;
+            .collect::<Result<HashMap<_, _>, RenderError>>()?;
 
         // Kahn's algorithm
         let n = level_to_parts.len();
-        let mut dependents: HashMap<LevelIndex, Vec<_>> = HashMap::with_capacity(n);
+        let mut dependents: HashMap<LevelId, Vec<_>> = HashMap::with_capacity(n);
         let mut in_degrees = HashMap::with_capacity(n);
 
         for (lvl, (deps, _, _)) in &level_to_parts {
@@ -136,7 +147,7 @@ impl MainLoop {
             if let Some(dependents) = dependents.get(&lvl) {
                 for dependent in dependents {
                     let Some(deg) = in_degrees.get_mut(dependent) else {
-                        bail!("dependent should exist in in_degrees");
+                        panic!("dependent should exist in in_degrees");
                     };
 
                     *deg -= 1;
@@ -148,17 +159,17 @@ impl MainLoop {
         }
 
         if order.len() != n {
-            bail!("cycle detected when trying to render Levels");
+            return Err(RenderError::LevelDependencyCycle);
         }
 
         for lvl in &order {
             let Some(parts) = level_to_parts.get_mut(lvl) else {
-                bail!("level should exist in level_to_parts");
+                panic!("level should exist in level_to_parts");
             };
 
             if let Some(win_instructions) = parts.2.take() {
                 let Some(level) = self.world.get_level(*lvl) else {
-                    bail!("level index should be valid because it came from iter_levels");
+                    panic!("level index should be valid because it came from iter_levels");
                 };
 
                 if let Some(win) = level.get_window() {
@@ -167,7 +178,7 @@ impl MainLoop {
                     };
 
                     window.set_instructions(win_instructions);
-                    
+
                     if let Some(os) = window.as_os() {
                         os.request_redraw();
                     }
@@ -179,7 +190,9 @@ impl MainLoop {
             .into_iter()
             .filter_map(|lvl| Some(level_to_parts.remove(&lvl)?.1));
 
-        renderer.submit_level_instructions(&mut level_instructions)?;
+        renderer
+            .submit_level_instructions(&mut level_instructions)
+            .map_err(RenderError::RendererError)?;
 
         Ok(())
     }
@@ -341,8 +354,8 @@ impl ApplicationHandler for MainLoop {
             // Only do rendering work when it is at all possible.
             if self.world.get_renderer().is_some() {
                 match self.render_idle() {
-                    Ok(()) => {},
-                    Err(e) => tracing::error!("rendering failed: {e}")
+                    Ok(()) => {}
+                    Err(e) => tracing::error!("rendering failed: {e}"),
                 }
             }
         }
@@ -385,12 +398,22 @@ impl ApplicationHandler for MainLoop {
 
 const MAIN_QUEUE_ASYNC_LEN: usize = 8;
 
+#[derive(Debug, Error)]
+#[allow(missing_docs)]
+/// Error returned by [`run_main_loop`].
+pub enum RunMainLoopError {
+    #[error("winit error: {0}")]
+    WinitOsError(#[from] OsError),
+    #[error("event loop error: {0}")]
+    EventLoopError(#[from] EventLoopError),
+}
+
 /// Entry point for the engine.
 ///
 /// `init_fn` is called when the main loop has initialized fully.
 ///
 /// The main loop is what controls the whole engine, from the [`World`] to the
-/// renderer to all stable-tick logic. The [`World`], is not shareable across
+/// renderer to all stable-tick logic. The `World`, is not shareable across
 /// threads, so all operations with Components must be routed through the main loop.
 ///
 /// See [`task`](crate::core::task) for working with async code.
@@ -399,12 +422,14 @@ const MAIN_QUEUE_ASYNC_LEN: usize = 8;
 ///
 /// # Safety
 ///
-/// This function must be called exactly once on the main thread. The main loop
-/// provides a [`tokio`] runtime, so do not use `#[tokio::main]`.
+/// This functions must be called **exactly** once from the main thread.
+/// 
+/// For `tokio` users, build a `Runtime` manually and dispatch through a handle.
+/// Don't use `#[tokio::main]`.
 pub unsafe fn run_main_loop(
     world_builder: WorldBuilder,
     init_fn: impl FnOnce(&World) + 'static,
-) -> AResult<()> {
+) -> Result<(), RunMainLoopError> {
     if cfg!(test) {
         panic!("Cannot run the main loop during a test. Write an example");
     }
@@ -447,6 +472,8 @@ pub unsafe fn run_main_loop(
     Ok(())
 }
 
+#[derive(Debug, Error)]
+#[error("main loop closed")]
 /// Error returned when the main loop has ended or hasn't started.
 pub struct MainClosedError;
 

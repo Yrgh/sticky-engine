@@ -1,17 +1,23 @@
+//! The [`AssetManager`] and [`GlobalInterner`].
+
 use std::{
     any::{Any, TypeId, type_name},
     collections::{HashMap, hash_map::Entry},
-    sync::LazyLock,
     sync::Arc,
+    sync::LazyLock,
 };
 
 use parking_lot::RwLock;
 use thiserror::Error;
 
+use crate::core::asset::traits::{
+    BytesError, IntoCacher, LoadAssetError, SaveAssetError, SaverLoader, UpdateError,
+};
+
 use super::*;
 
 #[derive(Debug, Error)]
-/// Error returned by [`AssetManager::get_asset`].
+/// Error returned by `AssetManager::get_asset_*`.
 pub enum GetAssetError {
     #[error("load error: {0}")]
     /// Returned if there was an error in the [`IAssetLoader`].
@@ -31,7 +37,7 @@ pub enum GetAssetError {
 }
 
 #[derive(Debug, Error)]
-/// Error returned by [`AssetManager::set_asset`].
+/// Error returned by `AssetManager::set_asset_*`.
 pub enum SetAssetError {
     #[error("save error: {0}")]
     /// Returned if there was an error in the [`IAssetSaver`].
@@ -93,7 +99,36 @@ const _: () = {
 };
 
 impl AssetManager {
-    /// Create a new [`AssetManagerBuilder`]
+    /// Create a new [`AssetManagerBuilder`].
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// # use sticky_engine::core::asset::{*, manager::*, traits::*, storage::*};
+    /// # use std::sync::Arc;
+    /// # fn _test<
+    /// # FsAccessor: IAssetAccessor + Default,
+    /// # AnyCacher: IAssetCacher + Default,
+    /// # Texture: IAsset,
+    /// # PngLoader: IAssetLoader + Default,
+    /// # PngSaver: IAssetSaver + Default,
+    /// # Config: IAsset,
+    /// # ConfigSaverLoader: SaverLoader + Default,
+    /// # >() {
+    /// let mut builder = AssetManager::builder();
+    /// builder
+    ///     .with_accessor(FsAccessor::default())
+    ///     .with_default_cacher(AnyCacher::default());
+    ///
+    /// builder
+    ///     .register_loader::<Texture>(PngLoader::default())
+    ///     .register_saver::<Texture>(PngSaver::default());
+    ///
+    /// builder.register_saver_loader::<Config>(ConfigSaverLoader::default());
+    ///
+    /// let asset_manager: Arc<AssetManager> = builder.build();
+    /// # }
+    /// ```
     pub fn builder() -> AssetManagerBuilder {
         AssetManagerBuilder {
             loaders: HashMap::new(),
@@ -149,7 +184,7 @@ impl AssetManager {
         };
 
         loaded.resolve_blocking(self)?;
-        
+
         let owned = DynOwnedAsset::from_owned(OwnedAsset::new(asset_path.as_ref(), loaded));
 
         let asset = match cacher.update_asset_unlocking(owned) {
@@ -231,7 +266,7 @@ impl AssetManager {
         };
 
         asset_unlocker.on_drop = None;
-        
+
         Ok(asset)
     }
 
@@ -369,9 +404,6 @@ impl AssetManagerBuilder {
     ///
     /// There is no default loader. You must register a loader for all assets
     /// you use to avoid a panic, including engine assets.
-    ///
-    /// See [`Self::register_saver`] and [`Self::register_asset`] for
-    /// registering a saver for the given type.
     pub fn register_loader<T: Any + Send + Sync>(
         &mut self,
         loader: impl IAssetLoader,
@@ -441,9 +473,9 @@ impl AssetManagerBuilder {
     }
 
     /// Register a loader and saver from a value that is both.
-    pub fn register_saver_loader<T: Any + Send + Sync, Sl: SaverLoader>(
+    pub fn register_saver_loader<T: Any + Send + Sync>(
         &mut self,
-        saver_loader: Sl,
+        saver_loader: impl SaverLoader,
     ) -> &mut Self {
         let (saver, loader) = saver_loader.split();
         self.register_loader::<T>(loader).register_saver::<T>(saver)

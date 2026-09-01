@@ -2,10 +2,11 @@
 
 pub use super::core::{
     component::{ComponentId, ComponentParent, DynComponentId, IComponent, ISlotId},
-    level::LevelIndex,
+    level::LevelId,
     main_loop::{queue_quit, run_main_loop},
-    task::{join_main},
+    task::{join_main, dispatch_main},
     trans::*,
     world::World,
+    asset::{Asset, AssetManager}
 };
 pub use super::{comp_def, slot_def, slot_impl};

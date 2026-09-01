@@ -71,7 +71,7 @@ impl<C: IComponent> IColumn for RefCellGenSlotVec<C> {
 /// Each `Level` is separate from every other. Components should only have children in the same
 /// `Level` as themselves. Each `Level` has a list of root Components
 pub struct Level {
-    self_idx: Cell<Option<LevelIndex>>,
+    self_idx: Cell<Option<LevelId>>,
     component_columns: FrozenMap<TypeId, Box<dyn IColumn>, BuildTypeIdHasher>,
     top_level: RefCell<Vec<DynComponentId>>,
 
@@ -83,7 +83,7 @@ pub struct Level {
 }
 
 impl Level {
-    pub(crate) fn new(self_idx: LevelIndex) -> Self {
+    pub(crate) fn new(self_idx: LevelId) -> Self {
         Self {
             self_idx: Cell::new(Some(self_idx)),
             component_columns: FrozenMap::default(),
@@ -129,8 +129,8 @@ impl Level {
         self.window.get()
     }
 
-    /// Returns the [`LevelIndex`] that accesses this `Level`.
-    pub fn id(&self) -> LevelIndex {
+    /// Returns the [`LevelId`] that accesses this `Level`.
+    pub fn id(&self) -> LevelId {
         self.self_idx.get().expect("level not active")
     }
 
@@ -458,21 +458,21 @@ impl Level {
 
 /// Non-owning index within the [`World`] of a [`Level`].
 #[derive(Clone, Copy, Hash, PartialEq, Eq, Debug)]
-pub struct LevelIndex(pub(crate) u32, pub(crate) u32);
+pub struct LevelId(pub(crate) u32, pub(crate) u32);
 
 /// Singly-owning index within the [`World`] of a [`Level`].
 #[derive(Hash)]
-pub struct LevelIndexOwned(pub(crate) u32, pub(crate) u32);
+pub struct LevelIdOwned(pub(crate) u32, pub(crate) u32);
 
-impl LevelIndexOwned {
+impl LevelIdOwned {
     /// Returns a non-owning copy of this index.
-    pub fn handle(&self) -> LevelIndex {
-        LevelIndex(self.0, self.1)
+    pub fn handle(&self) -> LevelId {
+        LevelId(self.0, self.1)
     }
 
     /// Leaks the index. The [`Level`] will live until the [`World`] is dropped.
     ///
-    /// Avoid silent-dropping a `LevelIndexOwned`, as it logs an error unless
+    /// Avoid silent-dropping a `LevelIdOwned`, as it logs an error unless
     /// you call this manually.
     pub fn leak(mut self) {
         self.0 = u32::MAX;
@@ -480,27 +480,27 @@ impl LevelIndexOwned {
     }
 }
 
-impl Drop for LevelIndexOwned {
+impl Drop for LevelIdOwned {
     fn drop(&mut self) {
         if self.0 != u32::MAX && self.1 != u32::MAX {
             tracing::warn!(
                 handle.pos_idx = self.0,
                 handle.gen_idx = self.1,
-                "a LevelIndexOwned was dropped without manually being leaked, preventing the Level \
+                "a LevelIdOwned was dropped without manually being leaked, preventing the Level \
                 from being removed until the World is destroyed"
             );
         }
     }
 }
 
-impl PartialEq<LevelIndex> for LevelIndexOwned {
-    fn eq(&self, other: &LevelIndex) -> bool {
+impl PartialEq<LevelId> for LevelIdOwned {
+    fn eq(&self, other: &LevelId) -> bool {
         &self.handle() == other
     }
 }
 
-impl PartialEq<LevelIndexOwned> for LevelIndex {
-    fn eq(&self, other: &LevelIndexOwned) -> bool {
+impl PartialEq<LevelIdOwned> for LevelId {
+    fn eq(&self, other: &LevelIdOwned) -> bool {
         self == &other.handle()
     }
 }

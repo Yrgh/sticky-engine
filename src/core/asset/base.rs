@@ -12,7 +12,7 @@ struct State<T, X: Clone> {
 }
 
 /// The content of one entry in an asset cache.
-/// 
+///
 /// `T` is stored in an [`Arc`]. `X` is stored inline. You can use `X` for
 /// metadata.
 ///

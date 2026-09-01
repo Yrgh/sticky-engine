@@ -1,4 +1,11 @@
-use std::{any::{Any, TypeId}, pin::Pin, str::Utf8Error, sync::Arc};
+//! Traits for the [`AssetManager`]
+
+use std::{
+    any::{Any, TypeId},
+    pin::Pin,
+    str::Utf8Error,
+    sync::Arc,
+};
 
 use thiserror::Error;
 
@@ -136,7 +143,11 @@ impl SaveAssetError {
 /// the config file for each saving mode.
 pub trait IAssetSaver: Any + Send + Sync {
     /// Serialize an asset as bytes
-    fn save_as_bytes(&self, asset_path: &Arc<str>, value: &dyn Any) -> Result<Box<[u8]>, SaveAssetError>;
+    fn save_as_bytes(
+        &self,
+        asset_path: &Arc<str>,
+        value: &dyn Any,
+    ) -> Result<Box<[u8]>, SaveAssetError>;
 
     /// Returns whether this asset saver can save the given type.
     fn saves(&self, type_id: TypeId) -> bool;
@@ -151,7 +162,7 @@ pub trait SaverLoader: IAssetSaver + IAssetLoader + Sized {
 }
 
 #[derive(Debug, Error)]
-/// Returned by [`IAssetCacher::update_asset`]
+/// Returned by `IAssetCacher::update_asset_*`
 pub enum UpdateError {
     #[error("given asset type does not match existing asset type")]
     /// Returned if the cached asset and the given asset have different types
@@ -160,12 +171,9 @@ pub enum UpdateError {
 
 /// Cacher for assets of a specific type.
 ///
-/// Secondarily, it is the asset cacher's job to intern the strings (see
-/// [`Asset::from_parts`]).
-///
-/// It is important to remember this model: retrieve_asset_* will either return
-/// an asset, *or* lock the asset's slot. update_asset_privileged and
-/// release_asset_lock will not wait on the lock, and unlock the asset if it
+/// It is important to remember this model: `retrieve_asset_*` will either
+/// return an asset, *or* lock the asset's slot. `update_asset_privileged` and
+/// `release_asset_lock` will not wait on the lock, and unlock the asset if it
 /// was.
 pub trait IAssetCacher: Any + Send + Sync {
     /// Return the asset if it is cached, lock the asset if it is not, blocking
@@ -212,7 +220,9 @@ pub trait IAssetCacher: Any + Send + Sync {
     fn caches(&self, type_id: TypeId) -> bool;
 }
 
-mod private { pub trait Sealed {} }
+mod private {
+    pub trait Sealed {}
+}
 
 /// Helper trait for types that can be converted to `Arc<dyn IAssetCacher`.
 pub trait IntoCacher: private::Sealed {

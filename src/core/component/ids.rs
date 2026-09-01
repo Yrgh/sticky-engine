@@ -8,7 +8,7 @@ use std::{
 
 use crate::core::{
     ComponentGetError, ComponentGetMutError,
-    level::{Level, LevelIndex},
+    level::{Level, LevelId},
     relations::RELATIONS,
     util::gen_slot_vec::SlotIndex,
     world::World,
@@ -41,12 +41,12 @@ pub unsafe trait ISlotId: Any + std::hash::Hash + PartialEq + Eq + Clone {
     /// The constructed ID must acquire the correct Component,
     /// targeting the same level, generation, and raw index. The type ID must
     /// match, too.
-    unsafe fn from_parts(slot: SlotIndex, lidx: LevelIndex, tyid: TypeId) -> Self
+    unsafe fn from_parts(slot: SlotIndex, lidx: LevelId, tyid: TypeId) -> Self
     where
         Self: Sized;
 
     /// Returns the level ID.
-    fn level_id(&self) -> LevelIndex;
+    fn level_id(&self) -> LevelId;
     /// Returns the parts required to access a Component from a [`Level`]
     fn acquire_parts(&self) -> (SlotIndex, TypeId);
 
@@ -127,7 +127,7 @@ impl<T: IComponent> ToDyn<dyn IComponent> for T {
 /// A basic Component ID, referring to a specific type.
 pub struct ComponentId<C: IComponent> {
     slot: SlotIndex,
-    lidx: LevelIndex,
+    lidx: LevelId,
     _marker: PhantomData<C>,
 }
 
@@ -171,7 +171,7 @@ impl<C: IComponent> Eq for ComponentId<C> {}
 unsafe impl<C: IComponent> ISlotId for ComponentId<C> {
     type TraitObject = C;
 
-    unsafe fn from_parts(slot: SlotIndex, lidx: LevelIndex, _: TypeId) -> Self
+    unsafe fn from_parts(slot: SlotIndex, lidx: LevelId, _: TypeId) -> Self
     where
         Self: Sized,
     {
@@ -182,7 +182,7 @@ unsafe impl<C: IComponent> ISlotId for ComponentId<C> {
         }
     }
 
-    fn level_id(&self) -> LevelIndex {
+    fn level_id(&self) -> LevelId {
         self.lidx
     }
 
@@ -215,7 +215,7 @@ impl<C: IComponent> ISlotTr for C {
 /// A Component ID with no knowledge about the Component.
 pub struct DynComponentId {
     slot: SlotIndex,
-    lidx: LevelIndex,
+    lidx: LevelId,
     tyid: TypeId,
 }
 
@@ -252,7 +252,7 @@ impl std::fmt::Debug for DynComponentId {
 unsafe impl ISlotId for DynComponentId {
     type TraitObject = dyn IComponent;
 
-    unsafe fn from_parts(slot: SlotIndex, lidx: LevelIndex, tyid: TypeId) -> Self
+    unsafe fn from_parts(slot: SlotIndex, lidx: LevelId, tyid: TypeId) -> Self
     where
         Self: Sized,
     {
@@ -263,7 +263,7 @@ unsafe impl ISlotId for DynComponentId {
         }
     }
 
-    fn level_id(&self) -> LevelIndex {
+    fn level_id(&self) -> LevelId {
         self.lidx
     }
 

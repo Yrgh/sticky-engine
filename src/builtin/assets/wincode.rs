@@ -8,7 +8,7 @@ use std::{
 
 use wincode::{SchemaRead, SchemaWrite, config::Config, io::Writer};
 
-use crate::core::asset::{IAssetLoader, IAssetSaver, LoadAssetError, SaveAssetError};
+use crate::core::asset::{IAssetLoader, IAssetSaver, traits::{LoadAssetError, SaveAssetError, SaverLoader}};
 
 /// Saver and loader for a given [`wincode`] schema and config.
 pub struct WincodeSaveLoad<S, C: Config> {
@@ -76,5 +76,16 @@ where
 
     fn loads(&self, type_id: TypeId) -> bool {
         type_id == TypeId::of::<S::Dst>()
+    }
+}
+
+impl<S, C> SaverLoader for WincodeSaveLoad<S, C>
+where
+    S: for<'de> SchemaRead<'de, C, Dst = S::Src> + SchemaWrite<C> + Any + Send + Sync,
+    <S as SchemaWrite<C>>::Src: Sized + Any,
+    C: Config + Send + Sync + Clone,
+{
+    fn split(self) -> (Self, Self) {
+        (self.clone(), self)
     }
 }

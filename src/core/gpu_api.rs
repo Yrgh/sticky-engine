@@ -10,8 +10,7 @@ use crate::core::rendering::RenderingQueue;
 
 /// A backend for GPU interaction, including window surfaces and rendering.
 ///
-/// The GPU API will be stored in an [`Rc`](std::sync::Rc), so it may need
-/// interior mutability.
+/// The GPU API will be stored in an [`Rc`], so it may need interior mutability.
 ///
 /// The GPU API may be created independently, but will likely be created by the
 /// renderer.

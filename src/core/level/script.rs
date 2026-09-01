@@ -8,7 +8,7 @@ use std::{any::Any, fmt::Debug, hash::Hash};
 
 use crate::core::{
     component::{ComponentId, DynComponentId, IComponent, ISlotId},
-    level::{Level, LevelIndex},
+    level::{Level, LevelId},
     util::gen_slot_vec::SlotIndex,
     world::World,
 };
@@ -128,7 +128,7 @@ impl<T: IScript> From<ScriptId<T>> for DynScriptId {
 /// A basic Script that allows its top level to be turned on and off, including
 /// physics.
 pub struct ToggleLevel {
-    level: LevelIndex,
+    level: LevelId,
     top_level: Vec<DynComponentId>,
     is_enabled: bool,
 }
@@ -137,7 +137,7 @@ impl ToggleLevel {
     /// Creates an empty `ToggleLevel`, already enabled.
     pub fn new() -> Self {
         Self {
-            level: LevelIndex(u32::MAX, u32::MAX),
+            level: LevelId(u32::MAX, u32::MAX),
             top_level: Vec::new(),
             is_enabled: true,
         }

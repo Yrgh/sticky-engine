@@ -24,11 +24,10 @@
 //! heavily on [`Cell`](std::cell::Cell) and [`RefCell`](std::cell::RefCell) for
 //! handing data around without blocking.
 //!
-//! The engine supports async based on [`tokio`]. See [`core::task`] for
-//! utilities. The engine's entry point is
+//! The engine supports async throughout and is executor-agnostic. See
+//! [`core::task`] for utilities. The engine's entry point is
 //! [`run_main_loop`](prelude::run_main_loop), which must be called on the main
-//! thread exactly once and provides a runtime. Do not add the `#[tokio::main]`
-//! to your `main` function.
+//! thread exactly once.
 //!
 //! Rendering happens through [`Window`](core::window)s. Each window owns a
 //! [`Level`](core::level::Level). On-screen windows are represented by
@@ -44,22 +43,18 @@
 //!
 //! # Dependencies and feature flags
 //!
-//! The engine has the following dependencies:
+//! The engine has the following mandatory dependencies:
 //!
 //! - `glamx`
 //! - `linkme` (reexported in [`core::relations`])
 //! - `rapier3d`
 //! - `tracing`
-//! - `vulkano`
 //! - `winit`
 //!
 //! Note that it is up to the you to set a [`Subscriber`](tracing::Subscriber)
 //! in your application.
 //! 
 //! The following feature flags are available:
-//! 
-//! - **`nightly`**: enables some extra features like unsized coercion on some
-//!   types. Requires a nightly compiler.
 //! 
 //! - **`gpu-vulkan`**: adds a built-in GPU API based on `vulkano`. Enabled by
 //!   default.
@@ -75,6 +70,63 @@
 //! - **`ron`**: adds asset loaders and savers for `ron`. Requires `serde`.
 //! 
 //! - **`wincode`**: adds asset loaders and a schema for `Asset`
+//! 
+//! ## Writing a Component
+//! 
+//! Writing a Component by hand is difficult and error-prone, so you should use
+//! [`comp_def`] instead. See its documentation for a more detailed overview.
+//! 
+//! ```rust, ignore
+//! comp_def! {
+//!     struct CExample {
+//!         components {
+//!             // your child components here...
+//! 
+//!             static rel: /* Component */,
+//!             dyn rel2: /* Component or dyn Slot */,
+//!             dyn? opt_rel: /* Component or dyn Slot; optional */,
+//!             dyn* many: /* Component or dyn Slot; any number */,
+//!         }
+//!         variables {
+//!             // your variables here...
+//!         }
+//!         behaviors {
+//!             // your functions, special or otherwise, here...
+//! 
+//!             #[init] // Mandatory
+//!             fn init(
+//!                 world: &World,
+//!                 parent: ComponentParent,
+//!                 self_id: ComponentId<Self>,
+//!                 _: () // <- This can be any type you want. It will be made into a parameter on IComponent::spawn
+//!             ) -> CExampleInit {
+//!                 CExampleInit {
+//!                     // Initialize your variables and child Components
+//!                 }
+//!             }
+//!         }
+//!     }
+//! }
+//! ```
+//! 
+//! ## Writing a Slot
+//! 
+//! Slots, too, are complicated and error-prone to write, especially for impls.
+//! To define one, add [`#[slot_def]`](slot_def) above your trait. Your trait
+//! must be dyn-compatible, but is otherwise unrestricted.
+//! 
+//! ```rust,ignore
+//! #[slot_def]
+//! pub trait SExample {}
+//! ```
+//! 
+//! You will get an error if you try to implement a Slot. You need to add
+//! [`#[slot_impl]`](slot_impl) above the impl.
+//! 
+//! ```rust,ignore
+//! #[slot_impl]
+//! impl SExample for CExample {}
+//! ```
 
 #![warn(clippy::all)]
 #![allow(clippy::type_complexity)]
@@ -84,8 +136,6 @@
     clippy::todo,
     missing_docs
 )]
-
-#![cfg_attr(feature = "nightly", feature(unsize, coerce_unsized))]
 
 pub use glamx;
 pub use rapier3d;

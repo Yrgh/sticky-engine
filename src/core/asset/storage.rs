@@ -1,3 +1,5 @@
+//! [`IAsset`] and its containers: [`Asset`] and [`OwnedAsset`].
+
 use std::{
     any::{Any, TypeId},
     marker::PhantomData,
@@ -7,7 +9,7 @@ use std::{
 
 use event_listener::{Event, Listener};
 
-use crate::core::asset::{AssetManager, GetAssetError};
+use crate::core::asset::{AssetManager, manager::GetAssetError};
 
 /// Metadata from the cache, stored in an [`Asset`].
 ///
@@ -46,17 +48,54 @@ impl Drop for Metadata {
 }
 
 /// Trait for all assets.
+/// 
+/// Inside your implementation, you should called the corresponding `resolve_*`
+/// on all [`Asset`]s inside. For example:
+/// 
+/// ```rust
+/// # use sticky_engine::core::asset::{*, manager::*, storage::*};
+/// pub struct Texture {
+///     // ...
+/// }
+/// 
+/// # impl AutoAsset for Texture {}
+/// 
+/// pub struct Material {
+///     texture: Asset<Texture>,
+/// }
+/// 
+/// impl IAsset for Material {
+///     fn resolve_blocking(&mut self, asset_manager: &AssetManager) -> Result<(), GetAssetError> {
+///         self.texture.resolve_blocking(asset_manager)?;
+///         Ok(())
+///     }
+/// 
+///     fn resolve_async<'a>(
+///         &'a mut self,
+///         asset_manager: &'a AssetManager
+///     ) -> BoxedFuture<'a, Result<(), GetAssetError>> {
+///         Box::pin(async {
+///             self.texture.resolve_async(asset_manager).await?;
+///             Ok(())
+///         })
+///     }
+/// }
+/// ```
 pub trait IAsset: Any + Send + Sync {
     /// Find all unresolved [`Asset`]s contained within and resolve them,
     /// blocking until completion.
+    /// 
+    /// This function is automatically called during [`AssetManager::get_asset_blocking`]
     fn resolve_blocking(&mut self, asset_manager: &AssetManager) -> Result<(), GetAssetError>;
 
     /// Find all unresolved [`Asset`]s contained within and resolve them
     /// asynchronously.
-    fn resolve_async(
-        &mut self,
-        asset_manager: &AssetManager,
-    ) -> BoxedFuture<'_, Result<(), GetAssetError>>;
+    /// 
+    /// This function is automatically called during [`AssetManager::get_asset_async`]
+    fn resolve_async<'a>(
+        &'a mut self,
+        asset_manager: &'a AssetManager,
+    ) -> BoxedFuture<'a, Result<(), GetAssetError>>;
 }
 
 impl dyn IAsset {
@@ -72,7 +111,7 @@ impl dyn IAsset {
 /// Alias for [`Asset<dyn IAsset>`].
 pub type DynAsset = Asset<dyn IAsset>;
 
-/// Alias for a Pin<Box<dyn Future>>
+/// Alias for a `Pin<Box<dyn Future>>`
 pub type BoxedFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 type ResolveResult = Result<DynAsset, GetAssetError>;
 
@@ -98,6 +137,7 @@ struct Inner {
 const _: () = {
     const fn _verify_share<T: Send + Sync>() {}
     _verify_share::<Arc<Inner>>();
+    _verify_share::<DynAsset>();
 };
 
 /// A stored asset.
@@ -490,10 +530,8 @@ mod wincode_impl {
 
 /// Owned asset, including its path.
 ///
-/// Unlike [`Asset`], `OwnedAsset` owns its own asset value, inside a shared
-/// interned path ([`Arc<str>`]) returned by the manager or
-/// [`GlobalInterner`]. This allows you to mutate the inner value since the
-/// asset data is not shared.
+/// Unlike [`Asset`], `OwnedAsset` owns its own asset value and path, allowing
+/// you to change either at will.
 pub struct OwnedAsset<T: IAsset> {
     path: String,
     data: T,
@@ -502,7 +540,10 @@ pub struct OwnedAsset<T: IAsset> {
 impl<T: IAsset> OwnedAsset<T> {
     /// Create an entirely new `OwnedAsset`.
     pub fn new(path: impl Into<String>, data: T) -> Self {
-        Self { path: path.into(), data }
+        Self {
+            path: path.into(),
+            data,
+        }
     }
 
     /// Returns a reference to this asset's path.

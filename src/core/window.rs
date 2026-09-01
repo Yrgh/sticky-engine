@@ -12,13 +12,12 @@
 
 use std::{any::Any, rc::Rc, sync::Arc};
 
-use anyhow::{Result as AResult, bail};
-
+use thiserror::Error;
 use winit::{dpi::PhysicalSize, event::WindowEvent, window::Window as OsWindow};
 
 use crate::core::{
-    gpu_api::{IRenderer, ISurface, BoxedInstructions},
-    level::LevelIndex,
+    gpu_api::{BoxedInstructions, IRenderer, ISurface},
+    level::LevelId,
     util::gen_slot_vec::SlotIndex,
     world::World,
 };
@@ -75,10 +74,22 @@ impl Drop for WindowIdOwned {
     }
 }
 
+#[derive(Debug, Error)]
+pub(crate) enum DrawError {
+    #[error("no instructions set")]
+    NoInstructions,
+    #[error("no surface")]
+    NoSurface,
+    #[error("no swapchain image acquired")]
+    NoSwapImage,
+    #[error("render error: {0}")]
+    RenderError(anyhow::Error),
+}
+
 pub(crate) trait IWindowInt: Any {
     fn id_i(&self) -> WindowId;
 
-    fn level_i(&self) -> LevelIndex;
+    fn level_i(&self) -> LevelId;
 
     fn as_os_i(&self) -> Option<&OsWindow> {
         None
@@ -106,9 +117,9 @@ pub(crate) trait IWindowInt: Any {
     /// and none was staged; in that case no primary rendering should happen.
     fn try_acquire_swapchain(&mut self) -> bool;
 
-    fn draw(&mut self) -> AResult<()>;
+    fn draw(&mut self) -> Result<(), DrawError>;
 
-    fn switch_level(&mut self, level: LevelIndex);
+    fn switch_level(&mut self, level: LevelId);
 }
 
 /// Base trait for all windows.
@@ -119,9 +130,9 @@ pub trait IWindow: Sealed {
     /// Returns the ID of this window.
     fn id(&self) -> WindowId;
 
-    /// Returns the [`LevelIndex`] of the [`Level`](crate::core::level::Level)
+    /// Returns the [`LevelId`] of the [`Level`](crate::core::level::Level)
     /// this window owns.
-    fn level(&self) -> LevelIndex;
+    fn level(&self) -> LevelId;
 
     /// Returns the OS window backing this window, if any.
     fn as_os(&self) -> Option<&OsWindow>;
@@ -145,8 +156,8 @@ impl<T: IWindowInt> IWindow for T {
         <Self as IWindowInt>::id_i(self)
     }
 
-    /// Returns the [`LevelIndex`] of the [`Level`](crate::core::level::Level) this window owns.
-    fn level(&self) -> LevelIndex {
+    /// Returns the [`LevelId`] of the [`Level`](crate::core::level::Level) this window owns.
+    fn level(&self) -> LevelId {
         <Self as IWindowInt>::level_i(self)
     }
 
@@ -171,7 +182,7 @@ impl<T: IWindowInt> IWindow for T {
 /// This is the standard window type. It receives input events from the OS.
 pub struct RootWindow {
     id: WindowId,
-    level: LevelIndex,
+    level: LevelId,
     size: PhysicalSize<u32>,
     renderer: Rc<dyn IRenderer>,
     surface: Option<Box<dyn ISurface>>,
@@ -192,7 +203,7 @@ impl RootWindow {
     /// [`Level`](crate::core::level::Level) this window owns.
     pub fn new(
         id: WindowId,
-        level: LevelIndex,
+        level: LevelId,
         window: OsWindow,
         renderer: Rc<dyn IRenderer>,
     ) -> Self {
@@ -224,7 +235,7 @@ impl IWindowInt for RootWindow {
         self.id
     }
 
-    fn level_i(&self) -> LevelIndex {
+    fn level_i(&self) -> LevelId {
         self.level
     }
 
@@ -267,20 +278,22 @@ impl IWindowInt for RootWindow {
         self.surface.as_mut().is_none_or(|s| s.try_acquire())
     }
 
-    fn draw(&mut self) -> AResult<()> {
+    fn draw(&mut self) -> Result<(), DrawError> {
         // Try to acquire again, since this is no-op if we already have acquired a valid swapchain.
         if !self.try_acquire_swapchain() {
-            bail!("not ready to render");
+            return Err(DrawError::NoSwapImage);
         }
 
         let Some(surface) = &self.surface else {
-            bail!("no surface");
+            return Err(DrawError::NoSurface);
         };
 
         if let Some(instructions) = &self.instructions {
-            instructions.render(surface.as_ref())?;
+            instructions
+                .render(surface.as_ref())
+                .map_err(DrawError::RenderError)?;
         } else {
-            bail!("no instructions");
+            return Err(DrawError::NoInstructions);
         }
 
         Ok(())
@@ -290,7 +303,7 @@ impl IWindowInt for RootWindow {
         self.instructions = Some(instructions);
     }
 
-    fn switch_level(&mut self, level: LevelIndex) {
+    fn switch_level(&mut self, level: LevelId) {
         self.level = level;
     }
 }

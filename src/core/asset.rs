@@ -20,11 +20,33 @@
 
 pub mod base;
 
-mod manager_traits;
-pub use manager_traits::*;
+pub mod traits;
+use std::any::Any;
 
-mod manager;
-pub use manager::{GlobalInterner, AssetManager, AssetManagerBuilder, GetAssetError, SetAssetError};
+pub use traits::{IAssetAccessor, IAssetCacher, IAssetLoader, IAssetSaver};
 
-mod storage;
-pub use storage::*;
+pub mod manager;
+pub use manager::{AssetManager, GlobalInterner};
+
+pub mod storage;
+pub use storage::{Asset, DynAsset, DynOwnedAsset, IAsset, OwnedAsset};
+
+/// Shortcut to implement [`IAsset`] for types that don't contain nested
+/// [`Asset`]s.
+pub trait AutoAsset: Any + Send + Sync {}
+
+impl<T: AutoAsset> IAsset for T {
+    fn resolve_blocking(
+        &mut self,
+        _asset_manager: &AssetManager,
+    ) -> Result<(), manager::GetAssetError> {
+        Ok(())
+    }
+
+    fn resolve_async<'a>(
+        &'a mut self,
+        _asset_manager: &'a AssetManager,
+    ) -> storage::BoxedFuture<'a, Result<(), manager::GetAssetError>> {
+        Box::pin(async { Ok(()) })
+    }
+}

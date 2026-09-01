@@ -9,7 +9,9 @@ use std::{
 use ron::ser::PrettyConfig;
 use serde::{Deserialize, Serialize};
 
-use crate::core::asset::{IAssetLoader, IAssetSaver, LoadAssetError, SaveAssetError};
+use crate::core::asset::{
+    IAsset, IAssetLoader, IAssetSaver, traits::{LoadAssetError, SaveAssetError, SaverLoader},
+};
 
 /// Saver and loader using [`ron`].
 pub struct RonSaveLoad<T> {
@@ -32,7 +34,7 @@ impl<T> Clone for RonSaveLoad<T> {
     }
 }
 
-impl<T: Serialize + Any + Send + Sync> IAssetSaver for RonSaveLoad<T> {
+impl<T: Serialize + IAsset> IAssetSaver for RonSaveLoad<T> {
     fn save_as_bytes(
         &self,
         _asset_path: &Arc<str>,
@@ -50,7 +52,7 @@ impl<T: Serialize + Any + Send + Sync> IAssetSaver for RonSaveLoad<T> {
     }
 }
 
-impl<T: for<'de> Deserialize<'de> + Any + Send + Sync> IAssetLoader for RonSaveLoad<T> {
+impl<T: for<'de> Deserialize<'de> + IAsset> IAssetLoader for RonSaveLoad<T> {
     fn load_from_bytes(
         &self,
         _asset_path: &Arc<str>,
@@ -65,6 +67,12 @@ impl<T: for<'de> Deserialize<'de> + Any + Send + Sync> IAssetLoader for RonSaveL
 
     fn loads(&self, type_id: TypeId) -> bool {
         type_id == TypeId::of::<T>()
+    }
+}
+
+impl<T: IAsset + for<'de> Deserialize<'de> + Serialize> SaverLoader for RonSaveLoad<T> {
+    fn split(self) -> (Self, Self) {
+        (self.clone(), self)
     }
 }
 

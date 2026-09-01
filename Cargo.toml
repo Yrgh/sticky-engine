@@ -13,7 +13,6 @@ members = ["macros"]
 
 [features]
 default = ["vulkan-renderer", "simple-asset-impls", "ron", "wincode"]
-nightly = []
 
 gpu-vulkan = ["dep:vulkano"]
 vulkan-renderer = ["gpu-vulkan"]

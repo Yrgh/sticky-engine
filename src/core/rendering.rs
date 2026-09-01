@@ -4,7 +4,7 @@ use std::collections::HashSet;
 
 use sticky_engine_macros::slot_def;
 
-use crate::core::{level::LevelIndex};
+use crate::core::{level::LevelId};
 
 #[slot_def]
 /// Camera
@@ -19,7 +19,7 @@ impl RenderingQueue {
     }
 
     /// Searches all submitted items for references to camera
-    pub(crate) fn search_dependencies(&self) -> HashSet<LevelIndex> {
+    pub(crate) fn search_dependencies(&self) -> HashSet<LevelId> {
         HashSet::new()
     }
 }
