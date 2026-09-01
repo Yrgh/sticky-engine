@@ -47,41 +47,40 @@
 //!
 //! - `glamx`
 //! - `linkme` (reexported in [`core::relations`])
-//! - `rapier3d`
 //! - `tracing`
 //! - `winit`
 //!
 //! Note that it is up to the you to set a [`Subscriber`](tracing::Subscriber)
 //! in your application.
-//! 
+//!
 //! The following feature flags are available:
-//! 
+//!
 //! - **`gpu-vulkan`**: adds a built-in GPU API based on `vulkano`. Enabled by
 //!   default.
-//! 
+//!
 //! - **`vulkan-renderer`**: adds a default renderer. Requires `gpu-vulkan`.
 //!   Enabled by default.
-//! 
+//!
 //! - **`simple-asset-impls`**: adds tools for quick integration of the
 //!   [`AssetManager`](core::asset::AssetManager). Enabled by default.
-//! 
+//!
 //! - **`serde`**: adds a `serde` impl for [`Asset`](core::asset::Asset).
-//! 
+//!
 //! - **`ron`**: adds asset loaders and savers for `ron`. Requires `serde`.
-//! 
+//!
 //! - **`wincode`**: adds asset loaders and a schema for `Asset`
-//! 
+//!
 //! ## Writing a Component
-//! 
+//!
 //! Writing a Component by hand is difficult and error-prone, so you should use
 //! [`comp_def`] instead. See its documentation for a more detailed overview.
-//! 
+//!
 //! ```rust, ignore
 //! comp_def! {
 //!     struct CExample {
 //!         components {
 //!             // your child components here...
-//! 
+//!
 //!             static rel: /* Component */,
 //!             dyn rel2: /* Component or dyn Slot */,
 //!             dyn? opt_rel: /* Component or dyn Slot; optional */,
@@ -92,7 +91,7 @@
 //!         }
 //!         behaviors {
 //!             // your functions, special or otherwise, here...
-//! 
+//!
 //!             #[init] // Mandatory
 //!             fn init(
 //!                 world: &World,
@@ -108,21 +107,21 @@
 //!     }
 //! }
 //! ```
-//! 
+//!
 //! ## Writing a Slot
-//! 
+//!
 //! Slots, too, are complicated and error-prone to write, especially for impls.
 //! To define one, add [`#[slot_def]`](slot_def) above your trait. Your trait
 //! must be dyn-compatible, but is otherwise unrestricted.
-//! 
+//!
 //! ```rust,ignore
 //! #[slot_def]
 //! pub trait SExample {}
 //! ```
-//! 
+//!
 //! You will get an error if you try to implement a Slot. You need to add
 //! [`#[slot_impl]`](slot_impl) above the impl.
-//! 
+//!
 //! ```rust,ignore
 //! #[slot_impl]
 //! impl SExample for CExample {}
@@ -138,7 +137,6 @@
 )]
 
 pub use glamx;
-pub use rapier3d;
 pub use tracing;
 #[cfg(feature = "gpu-vulkan")]
 pub use vulkano;
@@ -149,3 +147,7 @@ pub use sticky_engine_macros::{comp_def, slot_def, slot_impl};
 pub mod builtin;
 pub mod core;
 pub mod prelude;
+
+#[allow(clippy::unwrap_used)]
+#[cfg(test)]
+mod test;

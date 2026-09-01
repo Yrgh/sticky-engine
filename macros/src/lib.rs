@@ -79,6 +79,7 @@ pub fn slot_impl(attr: TokenStream1, input: TokenStream1) -> TokenStream1 {
 ///             // init completes
 ///             #[init]
 ///             fn init(
+///                 world: &World,
 ///                 parent: ComponentParent,
 ///                 self_id: ComponentId<Self>,
 ///                 info: ()

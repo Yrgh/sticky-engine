@@ -26,7 +26,7 @@ use std::any::Any;
 pub use traits::{IAssetAccessor, IAssetCacher, IAssetLoader, IAssetSaver};
 
 pub mod manager;
-pub use manager::{AssetManager, GlobalInterner};
+pub use manager::{AssetManager, Interner};
 
 pub mod storage;
 pub use storage::{Asset, DynAsset, DynOwnedAsset, IAsset, OwnedAsset};

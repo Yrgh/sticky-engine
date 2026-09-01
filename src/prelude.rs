@@ -7,6 +7,7 @@ pub use super::core::{
     task::{join_main, dispatch_main},
     trans::*,
     world::World,
-    asset::{Asset, AssetManager}
+    asset::{Asset, AssetManager},
+    engine_sync::EngineSync,
 };
 pub use super::{comp_def, slot_def, slot_impl};

@@ -127,13 +127,15 @@ impl<Fs: AsyncFs> IAssetAccessor for FsAccessor<Fs> {
 /// A naive implementation of an [`IAssetCacher`].
 pub struct NaiveCacher<T: IAsset> {
     assets: FrozenMap<Arc<str>, Box<AssetCacheContent<T, ()>>>,
+    interner: Arc<Interner>,
 }
 
 impl<T: IAsset> NaiveCacher<T> {
     /// Returns an empty cache.
-    pub fn new() -> Self {
+    pub fn new(interner: Arc<Interner>) -> Self {
         Self {
             assets: FrozenMap::new(),
+            interner,
         }
     }
 
@@ -170,7 +172,7 @@ impl<T: IAsset> IAssetCacher for NaiveCacher<T> {
         &self,
         asset: DynOwnedAsset,
     ) -> Result<DynAsset, (UpdateError, DynOwnedAsset)> {
-        let (path, inner) = self.get_or_insert(&GlobalInterner::intern(asset.path()));
+        let (path, inner) = self.get_or_insert(&self.interner.intern(asset.path()));
 
         let data: Arc<T> = asset
             .downcast::<T>()
@@ -187,7 +189,7 @@ impl<T: IAsset> IAssetCacher for NaiveCacher<T> {
         &self,
         asset: DynOwnedAsset,
     ) -> Result<DynAsset, (UpdateError, DynOwnedAsset)> {
-        let (path, inner) = self.get_or_insert(&GlobalInterner::intern(asset.path()));
+        let (path, inner) = self.get_or_insert(&self.interner.intern(asset.path()));
 
         let data: Arc<T> = asset
             .downcast::<T>()
@@ -206,7 +208,7 @@ impl<T: IAsset> IAssetCacher for NaiveCacher<T> {
     ) -> Pin<Box<dyn Future<Output = Result<DynAsset, (UpdateError, DynOwnedAsset)>> + Send + 'a>>
     {
         Box::pin(async move {
-            let (path, inner) = self.get_or_insert(&GlobalInterner::intern(asset.path()));
+            let (path, inner) = self.get_or_insert(&self.interner.intern(asset.path()));
 
             let data: Arc<T> = asset
                 .downcast::<T>()
@@ -228,11 +230,9 @@ impl<T: IAsset> IAssetCacher for NaiveCacher<T> {
     fn caches(&self, type_id: TypeId) -> bool {
         type_id == TypeId::of::<T>()
     }
-}
 
-impl<T: IAsset> Default for NaiveCacher<T> {
-    fn default() -> Self {
-        Self::new()
+    fn uses_interner(&self, other: &Arc<Interner>) -> bool {
+        Arc::ptr_eq(&self.interner, other)
     }
 }
 

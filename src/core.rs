@@ -9,6 +9,7 @@ use thiserror::Error;
 
 pub mod asset;
 pub mod component;
+pub mod engine_sync;
 pub mod gpu_api;
 pub mod input;
 pub mod level;

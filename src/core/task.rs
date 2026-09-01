@@ -10,7 +10,7 @@ use std::any::Any;
 use futures::channel::oneshot;
 
 use crate::core::{
-    main_loop::{MainClosedError, MainJob, queue, queue_async}, world::World,
+    engine_sync::EngineSync, main_loop::{MainClosedError, MainJob}, world::World,
 };
 
 /// Runs a closure on the main thread with access to the [`World`], returning
@@ -37,8 +37,8 @@ use crate::core::{
 /// # use std::sync::Arc;
 /// # struct Mesh {}
 /// # impl core::asset::AutoAsset for Mesh {}
-/// async fn place_mesh(level: LevelId, asset_manager: Arc<AssetManager>) -> anyhow::Result<()> {
-///     let mesh: Asset<Mesh> = asset_manager.get_asset_async("mesh.glb").await?;
+/// async fn place_mesh(engine: &EngineSync, level: LevelId) -> anyhow::Result<()> {
+///     let mesh: Asset<Mesh> = engine.asset_manager.get_asset_async("mesh.glb").await?;
 /// 
 ///     join_main(move |world| -> anyhow::Result<()> {
 ///         world
@@ -53,11 +53,12 @@ use crate::core::{
 /// }
 /// ```
 pub async fn join_main<T: Any + Send + Sync, F: FnOnce(&World) -> T + Send + Sync + 'static>(
+    engine: &EngineSync,
     f: F,
 ) -> Result<T, MainClosedError>  {
     let (tx, rx) = oneshot::channel();
 
-    queue_async(MainJob::ExecAsync {
+    engine.queue_job_async(MainJob::ExecAsync {
         work: Box::new(|w| Box::new(f(w))),
         send: tx
     }).await?;
@@ -85,8 +86,8 @@ pub async fn join_main<T: Any + Send + Sync, F: FnOnce(&World) -> T + Send + Syn
 ///
 /// # Panics
 /// If the function is called outside of the main loop.
-pub fn dispatch_main<F: FnOnce(&World) + Send + 'static>(f: F) -> Result<(), MainClosedError> {
-    queue(MainJob::ExecSilent {
+pub fn dispatch_main<F: FnOnce(&World) + Send + 'static>(engine: &EngineSync, f: F) -> Result<(), MainClosedError> {
+    engine.queue_job_sync(MainJob::ExecSilent {
         work: Box::new(f)
     })?;
 

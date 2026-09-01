@@ -1,10 +1,7 @@
 //! The [`AssetManager`] and [`GlobalInterner`].
 
 use std::{
-    any::{Any, TypeId, type_name},
-    collections::{HashMap, hash_map::Entry},
-    sync::Arc,
-    sync::LazyLock,
+    any::{Any, TypeId, type_name}, collections::{HashMap, HashSet, hash_map::Entry}, sync::{Arc},
 };
 
 use parking_lot::RwLock;
@@ -56,25 +53,21 @@ pub enum SetAssetError {
 /// A global string interner for asset paths.
 ///
 /// All asset paths are sent into this pool, reducing allocations application-wide. Y
-pub struct GlobalInterner {
-    inner: RwLock<std::collections::HashSet<Arc<str>>>,
+pub struct Interner {
+    inner: RwLock<HashSet<Arc<str>>>,
 }
 
-static INTERNER: LazyLock<GlobalInterner> = LazyLock::new(|| GlobalInterner {
-    inner: RwLock::new(std::collections::HashSet::new()),
-});
-
-impl GlobalInterner {
+impl Interner {
     /// Intern a string, returning a shared [`Arc<str>`].
     ///
     /// If the string has been interned before, the existing [`Arc<str>`]
     /// is returned. Otherwise, a new allocation is made and stored.
-    pub fn intern(s: &str) -> Arc<str> {
-        if let Some(arc) = INTERNER.inner.read().get(s) {
+    pub fn intern(&self, s: &str) -> Arc<str> {
+        if let Some(arc) = self.inner.read().get(s) {
             return arc.clone();
         }
 
-        let mut guard = INTERNER.inner.write();
+        let mut guard = self.inner.write();
 
         if let Some(arc) = guard.get(s) {
             arc.clone()
@@ -84,6 +77,12 @@ impl GlobalInterner {
             arc
         }
     }
+
+    fn new() -> Self {
+        Self {
+            inner: RwLock::new(HashSet::new())
+        }
+    }
 }
 
 /// An asset manager that can be used to save and load various assets.
@@ -91,6 +90,7 @@ pub struct AssetManager {
     loaders_cachers: HashMap<TypeId, (Box<dyn IAssetLoader>, Arc<dyn IAssetCacher>)>,
     savers: HashMap<TypeId, Box<dyn IAssetSaver>>,
     accessor: Box<dyn IAssetAccessor>,
+    interner: Arc<Interner>,
 }
 
 const _: () = {
@@ -106,9 +106,10 @@ impl AssetManager {
     /// ```rust
     /// # use sticky_engine::core::asset::{*, manager::*, traits::*, storage::*};
     /// # use std::sync::Arc;
+    /// # trait HasNew { fn new(i: Arc<Interner>) -> Self; }
     /// # fn _test<
     /// # FsAccessor: IAssetAccessor + Default,
-    /// # AnyCacher: IAssetCacher + Default,
+    /// # AnyCacher: IAssetCacher + HasNew,
     /// # Texture: IAsset,
     /// # PngLoader: IAssetLoader + Default,
     /// # PngSaver: IAssetSaver + Default,
@@ -116,9 +117,10 @@ impl AssetManager {
     /// # ConfigSaverLoader: SaverLoader + Default,
     /// # >() {
     /// let mut builder = AssetManager::builder();
+    /// let interner = builder.interner();
     /// builder
     ///     .with_accessor(FsAccessor::default())
-    ///     .with_default_cacher(AnyCacher::default());
+    ///     .with_default_cacher(AnyCacher::new(interner));
     ///
     /// builder
     ///     .register_loader::<Texture>(PngLoader::default())
@@ -126,7 +128,7 @@ impl AssetManager {
     ///
     /// builder.register_saver_loader::<Config>(ConfigSaverLoader::default());
     ///
-    /// let asset_manager: Arc<AssetManager> = builder.build();
+    /// let asset_manager: AssetManager = builder.build();
     /// # }
     /// ```
     pub fn builder() -> AssetManagerBuilder {
@@ -136,6 +138,7 @@ impl AssetManager {
             cachers: HashMap::new(),
             default_cacher: None,
             accessor: None,
+            interner: Arc::new(Interner::new()),
         }
     }
 
@@ -202,7 +205,7 @@ impl AssetManager {
         &self,
         asset_path: &str,
     ) -> Result<Asset<T>, GetAssetError> {
-        let path = GlobalInterner::intern(asset_path);
+        let path = self.interner.intern(asset_path);
         let asset = self.get_asset_blocking_dyn::<T>(&path)?;
 
         let Ok(asset) = asset.downcast() else {
@@ -275,7 +278,7 @@ impl AssetManager {
         &self,
         asset_path: &str,
     ) -> Result<Asset<T>, GetAssetError> {
-        let path = GlobalInterner::intern(asset_path);
+        let path = self.interner.intern(asset_path);
         let asset = self.get_asset_async_dyn::<T>(&path).await?;
 
         let Ok(asset) = asset.downcast() else {
@@ -307,15 +310,15 @@ impl AssetManager {
 
             asset
         } else {
-            let path = GlobalInterner::intern(asset.path());
+            let path = self.interner.intern(asset.path());
 
             Asset::new_resolved(path, asset.into_inner().into(), None)
         };
 
-        let path = GlobalInterner::intern(asset.path());
-        let bytes = saver.save_as_bytes(&path, asset.as_ref())?;
+        let path = asset.path_arc();
+        let bytes = saver.save_as_bytes(path, asset.as_ref())?;
 
-        self.accessor.save_bytes_blocking(&path, &bytes)?;
+        self.accessor.save_bytes_blocking(path, &bytes)?;
 
         Ok(asset)
     }
@@ -345,15 +348,15 @@ impl AssetManager {
 
             asset
         } else {
-            let path = GlobalInterner::intern(asset.path());
+            let path = self.interner.intern(asset.path());
 
             Asset::new_resolved(path, asset.into_inner().into(), None)
         };
 
-        let path = GlobalInterner::intern(asset.path());
-        let bytes = saver.save_as_bytes(&path, asset.as_ref())?;
+        let path = asset.path_arc();
+        let bytes = saver.save_as_bytes(path, asset.as_ref())?;
 
-        self.accessor.save_bytes_async(&path, &bytes).await?;
+        self.accessor.save_bytes_async(path, &bytes).await?;
 
         Ok(asset)
     }
@@ -368,6 +371,7 @@ pub struct AssetManagerBuilder {
     cachers: HashMap<TypeId, Arc<dyn IAssetCacher>>,
     default_cacher: Option<Arc<dyn IAssetCacher>>,
     accessor: Option<Box<dyn IAssetAccessor>>,
+    interner: Arc<Interner>,
 }
 
 impl AssetManagerBuilder {
@@ -464,6 +468,13 @@ impl AssetManagerBuilder {
             );
         }
 
+        if !cacher.uses_interner(&self.interner) {
+            panic!(
+                "cacher for {} does not use the same interner as the asset manager",
+                type_name::<T>()
+            );
+        }
+
         match self.cachers.entry(type_id) {
             Entry::Occupied(_) => panic!("cacher for {} is already set", type_name::<T>()),
             Entry::Vacant(v) => v.insert(cacher),
@@ -509,7 +520,7 @@ impl AssetManagerBuilder {
     ///
     /// Every loader must have a cacher, and vice versa, or else this function
     /// will panic.
-    pub fn build(mut self) -> Arc<AssetManager> {
+    pub fn build(mut self) -> AssetManager {
         let accessor = self.accessor.expect("no accessor set");
         let loaders_cachers = self
             .loaders
@@ -537,10 +548,16 @@ impl AssetManagerBuilder {
             panic!("there are cachers without loaders");
         }
 
-        Arc::new(AssetManager {
+        AssetManager {
             loaders_cachers,
             savers: self.savers,
             accessor,
-        })
+            interner: self.interner
+        }
+    }
+
+    /// Returns a clone of the [`Interner`] that should be used for creating caches.
+    pub fn interner(&self) -> Arc<Interner> {
+        self.interner.clone()
     }
 }

@@ -18,11 +18,7 @@ use winit::{
 };
 
 use crate::core::{
-    asset::AssetManager,
-    gpu_api::{GpuApi, IGpuApi, IRenderer},
-    level::{Level, LevelId, LevelIdOwned},
-    util::gen_slot_vec::{RefCellGenSlotVec, SlotIndex},
-    window::{IWindowBoth, RootWindow, WindowId, WindowIdOwned},
+    asset::AssetManager, engine_sync::EngineSync, gpu_api::{GpuApi, IGpuApi, IRenderer}, level::{Level, LevelId, LevelIdOwned}, util::gen_slot_vec::{RefCellGenSlotVec, SlotIndex}, window::{IWindowBoth, RootWindow, WindowId, WindowIdOwned},
 };
 
 use crate::core::{util::sentinel::SentinelMaxU32, window::IWindow};
@@ -45,9 +41,6 @@ pub struct World {
 
     action_queue: RefCell<VecDeque<WorldAction>>,
 
-    stable_rate: Cell<Duration>,
-    min_idle_delay: Cell<Duration>,
-
     windows: RefCellGenSlotVec<(LevelIdOwned, Box<dyn IWindowBoth>)>,
 
     main_window: Cell<Option<WindowId>>,
@@ -58,7 +51,7 @@ pub struct World {
     gpu_api: Option<GpuApi>,
     renderer: Option<Rc<dyn IRenderer>>,
 
-    asset_manager: Arc<AssetManager>,
+    engine_sync: Arc<EngineSync>
 }
 
 impl World {
@@ -100,25 +93,7 @@ impl World {
 }
 
 impl World {
-    /// Returns the rate at which physics are run.
-    pub fn get_stable_tick_rate(&self) -> Duration {
-        self.stable_rate.get()
-    }
-
-    /// Sets the rate at which physics are run.
-    pub fn set_stable_tick_rate(&self, rate: Duration) {
-        self.stable_rate.set(rate);
-    }
-
-    /// Returns the minimum delay between idle hooks.
-    pub fn get_idle_min_delay(&self) -> Duration {
-        self.min_idle_delay.get()
-    }
-
-    /// Sets the minimum delay between idle hooks.
-    pub fn set_idle_min_delay(&self, rate: Duration) {
-        self.min_idle_delay.set(rate);
-    }
+    
 
     /// Processes all queued level/window deletions.
     ///
@@ -192,6 +167,13 @@ impl World {
         } else {
             Some(unsafe { self.active_event_loop.get().as_ref_unchecked() })
         }
+    }
+}
+
+impl World {
+    /// Returns the [`EngineSync`] that owns this `World`.
+    pub fn engine(&self) -> &Arc<EngineSync> {
+        &self.engine_sync
     }
 }
 
@@ -563,13 +545,6 @@ impl World {
     }
 }
 
-impl World {
-    /// Returns the [`AssetManager`] currently tied to the [`World`].
-    pub fn asset_manager(&self) -> &Arc<AssetManager> {
-        &self.asset_manager
-    }
-}
-
 #[derive(Error, Debug)]
 pub(crate) enum CompleteInitError {
     #[error("failed to initialize renderer: {0}")]
@@ -641,10 +616,10 @@ pub(crate) enum GpuCreateMode {
 pub struct WorldBuilder {
     pub(crate) main_mode: MainMode,
     pub(crate) gpu_create_mode: GpuCreateMode,
-    asset_manager: Option<Arc<AssetManager>>,
+    pub(crate) asset_manager: Option<AssetManager>,
 
-    stable_rate: Duration,
-    min_idle_delay: Duration,
+    pub(crate) stable_rate: Duration,
+    pub(crate) min_idle_delay: Duration,
 }
 
 impl WorldBuilder {
@@ -705,7 +680,7 @@ impl WorldBuilder {
     /// Set the [`AssetManager`] the [`World`] will own.
     ///
     /// You must set the asset manager, or your program will panic.
-    pub fn with_asset_manager(&mut self, asset_manager: Arc<AssetManager>) -> &mut Self {
+    pub fn with_asset_manager(&mut self, asset_manager: AssetManager) -> &mut Self {
         self.asset_manager = Some(asset_manager);
         self
     }
@@ -726,15 +701,12 @@ impl WorldBuilder {
         self
     }
 
-    pub(crate) fn finish_ish(&self) -> World {
+    pub(crate) fn finish_ish(&self, engine_sync: Arc<EngineSync>) -> World {
         let world = World {
             levels: Box::new(boxcar::Vec::new()),
             level_free_head: Cell::new(SentinelMaxU32::default()),
 
             action_queue: RefCell::new(VecDeque::new()),
-
-            stable_rate: Cell::new(self.stable_rate),
-            min_idle_delay: Cell::new(self.min_idle_delay),
 
             windows: RefCellGenSlotVec::new(),
 
@@ -750,7 +722,7 @@ impl WorldBuilder {
 
             renderer: None,
 
-            asset_manager: self.asset_manager.clone().expect("no asset manager set"),
+            engine_sync,
         };
 
         if let MainMode::OnlyLevel = self.main_mode {
@@ -760,21 +732,5 @@ impl WorldBuilder {
         }
 
         world
-    }
-
-    /// Builds the [`World`], with caveats.
-    ///
-    /// Certain features of the [`World`] will not work if used outside the main
-    /// loop. These include windows and the renderer. If the builder provides
-    /// either of those, they will do nothing.
-    ///
-    /// If you are writing tests, this is a better option, but it is highly
-    /// recommended to run the full engine.
-    ///
-    /// # Panics
-    ///
-    /// If the asset manager isn't set.
-    pub fn build(self) -> World {
-        self.finish_ish()
     }
 }

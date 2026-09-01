@@ -103,6 +103,7 @@ impl LoadAssetError {
 /// a config file either via binary or plaintext, you can create a loader that
 /// selects based on header and/or filepath, and/or try both.
 pub trait IAssetLoader: Any + Send + Sync {
+    
     /// Load an asset from its bytes, using the path as a hint if desired.
     fn load_from_bytes(
         &self,
@@ -218,6 +219,9 @@ pub trait IAssetCacher: Any + Send + Sync {
 
     /// Returns whether the asset type is cached by this manager.
     fn caches(&self, type_id: TypeId) -> bool;
+
+    /// Returns whether the cacher uses the given interner internally. It should.
+    fn uses_interner(&self, interner: &Arc<Interner>) -> bool;
 }
 
 mod private {

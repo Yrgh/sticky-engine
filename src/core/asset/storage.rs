@@ -48,28 +48,28 @@ impl Drop for Metadata {
 }
 
 /// Trait for all assets.
-/// 
+///
 /// Inside your implementation, you should called the corresponding `resolve_*`
 /// on all [`Asset`]s inside. For example:
-/// 
+///
 /// ```rust
 /// # use sticky_engine::core::asset::{*, manager::*, storage::*};
 /// pub struct Texture {
 ///     // ...
 /// }
-/// 
+///
 /// # impl AutoAsset for Texture {}
-/// 
+///
 /// pub struct Material {
 ///     texture: Asset<Texture>,
 /// }
-/// 
+///
 /// impl IAsset for Material {
 ///     fn resolve_blocking(&mut self, asset_manager: &AssetManager) -> Result<(), GetAssetError> {
 ///         self.texture.resolve_blocking(asset_manager)?;
 ///         Ok(())
 ///     }
-/// 
+///
 ///     fn resolve_async<'a>(
 ///         &'a mut self,
 ///         asset_manager: &'a AssetManager
@@ -84,13 +84,13 @@ impl Drop for Metadata {
 pub trait IAsset: Any + Send + Sync {
     /// Find all unresolved [`Asset`]s contained within and resolve them,
     /// blocking until completion.
-    /// 
+    ///
     /// This function is automatically called during [`AssetManager::get_asset_blocking`]
     fn resolve_blocking(&mut self, asset_manager: &AssetManager) -> Result<(), GetAssetError>;
 
     /// Find all unresolved [`Asset`]s contained within and resolve them
     /// asynchronously.
-    /// 
+    ///
     /// This function is automatically called during [`AssetManager::get_asset_async`]
     fn resolve_async<'a>(
         &'a mut self,
@@ -167,8 +167,13 @@ pub struct Asset<T: IAsset + ?Sized> {
 }
 
 impl<T: IAsset + ?Sized> Asset<T> {
-    /// Returns the associate path of this asset.
+    /// Returns the associated path of this asset.
     pub fn path(&self) -> &str {
+        &self.path
+    }
+
+    /// Returns the associated path of this asset as its interned form.
+    pub fn path_arc(&self) -> &Arc<str> {
         &self.path
     }
 }
@@ -459,12 +464,33 @@ impl<T: IAsset + ?Sized> AsRef<T> for Asset<T> {
     }
 }
 
+/// Unresolved [`Asset`]s only compare equal to their clones. [`DynAsset`]
+/// compares to both others of its kind and typed `Asset`s, as long as they
+/// point to the same path.
+impl<T: IAsset + ?Sized, U: IAsset + ?Sized> PartialEq<Asset<U>> for Asset<T> {
+    fn eq(&self, other: &Asset<U>) -> bool {
+        // Assets of the same inner ""should"" have the same path
+        // Assets of different inners ""might"" have the same path
+        let same_inner = Arc::ptr_eq(&self.inner, &other.inner);
+        let same_path = Arc::ptr_eq(&self.path, &other.path);
+        
+        if same_inner {
+            debug_assert!(same_path, "assets have the same inner have different paths");
+        }
+        
+        same_inner && same_path
+    }
+}
+
+// -----NOTE:-----
+// We DON'T use the interner here. Creating a new Arc is only one extra
+// allocation and only lasts until the Asset is resolved.
+
 #[cfg(feature = "serde")]
 mod serde_impl {
     use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
     use super::*;
-    use crate::core::asset::GlobalInterner;
 
     impl<T: IAsset> Serialize for Asset<T> {
         fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
@@ -481,7 +507,7 @@ mod serde_impl {
             D: Deserializer<'de>,
         {
             let path = <&str>::deserialize(deserializer)?;
-            let path = GlobalInterner::intern(path);
+            let path = Arc::from(path);
             Ok(Asset::new_unresolved(path))
         }
     }
@@ -490,8 +516,6 @@ mod serde_impl {
 #[cfg(feature = "wincode")]
 mod wincode_impl {
     use wincode::{SchemaRead, SchemaWrite, config::Config};
-
-    use crate::core::asset::GlobalInterner;
 
     use super::*;
 
@@ -515,14 +539,14 @@ mod wincode_impl {
             dst: &mut std::mem::MaybeUninit<Self::Dst>,
         ) -> wincode::ReadResult<()> {
             let path = <&'de str as SchemaRead<'de, C>>::get(reader)?;
-            let path = GlobalInterner::intern(path);
+            let path = Arc::from(path);
             dst.write(Asset::new_unresolved(path));
             Ok(())
         }
 
         fn get(reader: impl wincode::io::Reader<'de>) -> wincode::ReadResult<Self::Dst> {
             let path = <&'de str as SchemaRead<'de, C>>::get(reader)?;
-            let path = GlobalInterner::intern(path);
+            let path = Arc::from(path);
             Ok(Asset::new_unresolved(path))
         }
     }

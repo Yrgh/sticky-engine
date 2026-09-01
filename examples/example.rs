@@ -117,9 +117,11 @@ fn main() {
                 .expect("main level should exist after main window was created");
             main_level.spawn_top_level::<CTop>(world, ());
 
-            std::thread::spawn(|| {
+            let engine = world.engine().clone();
+
+            std::thread::spawn(move || {
                 std::thread::sleep(std::time::Duration::from_secs(2));
-                let _ = queue_quit();
+                let _ = queue_quit(&engine);
             });
         })
     }

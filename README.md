@@ -60,3 +60,7 @@ fn main() {
     .expect("main loop failed");
 }
 ```
+
+### AI Policy
+
+AI is used sparingly and non-critically. Most code is human-made. **All** code is reviewed and conceptualized by a human and brought up to standard.
