@@ -170,23 +170,23 @@ pub fn slot_def_inner(attr: TokenStream1, input: TokenStream1) -> TokenStream1 {
                 }
 
                 fn get<'w>(&self, world: &'w #engine_crate::core::world::World)
-                    -> Result<::std::cell::Ref<'w, Self::TraitObject>, #engine_crate::core::ComponentGetError>
+                    -> Result<::std::cell::Ref<'w, Self::TraitObject>, #engine_crate::core::GetError>
                 {
                     Ok((self.conv.comp_to_t_ref)(
                         world
                             .get_level(self.lidx)
-                            .ok_or(#engine_crate::core::ComponentGetError::NotFound)?
+                            .ok_or(#engine_crate::core::GetError::NotFound)?
                             .acquire_component_internal_dyn(self.tyid, self.slot)?
                     ))
                 }
 
                 fn get_mut<'w>(&self, world: &'w #engine_crate::core::world::World)
-                    -> Result<::std::cell::RefMut<'w, Self::TraitObject>, #engine_crate::core::ComponentGetMutError>
+                    -> Result<::std::cell::RefMut<'w, Self::TraitObject>, #engine_crate::core::GetMutError>
                 {
                     Ok((self.conv.comp_to_t_mut)(
                         world
                             .get_level(self.lidx)
-                            .ok_or(#engine_crate::core::ComponentGetMutError::NotFound)?
+                            .ok_or(#engine_crate::core::GetMutError::NotFound)?
                             .acquire_component_internal_dyn_mut(self.tyid, self.slot)?
                     ))
                 }

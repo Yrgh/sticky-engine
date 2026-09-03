@@ -1,6 +1,6 @@
 //! Inherit properties of Components, mainly [`IComponent`]
 
-use crate::core::{ComponentGetError, ComponentGetMutError, level::LevelId, world::World};
+use crate::core::{GetError, GetMutError, level::LevelId, world::World};
 
 use super::*;
 
@@ -130,8 +130,8 @@ pub unsafe trait IComponent: Any {
         while let Some(comp) = stack.pop() {
             let mut comp = match comp.get_mut(world) {
                 Ok(comp) => comp,
-                Err(ComponentGetMutError::NotFound) => continue,
-                Err(ComponentGetMutError::BorrowMutError(e)) => {
+                Err(GetMutError::NotFound) => continue,
+                Err(GetMutError::BorrowMutError(e)) => {
                     panic!("post_init borrow error: {e}")
                 }
             };
@@ -173,8 +173,8 @@ pub unsafe trait IComponent: Any {
             let mut children = {
                 let mut comp = match id.get_mut(world) {
                     Ok(comp) => comp,
-                    Err(ComponentGetMutError::NotFound) => continue,
-                    Err(ComponentGetMutError::BorrowMutError(e)) => {
+                    Err(GetMutError::NotFound) => continue,
+                    Err(GetMutError::BorrowMutError(e)) => {
                         panic!("destroy borrow error: {e}")
                     }
                 };
@@ -218,8 +218,8 @@ pub unsafe trait IComponent: Any {
         while let Some(comp) = stack.pop() {
             let mut comp = match comp.get_mut(world) {
                 Ok(comp) => comp,
-                Err(ComponentGetMutError::NotFound) => continue,
-                Err(ComponentGetMutError::BorrowMutError(e)) => {
+                Err(GetMutError::NotFound) => continue,
+                Err(GetMutError::BorrowMutError(e)) => {
                     panic!("pre_phys borrow error: {e}")
                 }
             };
@@ -255,8 +255,8 @@ pub unsafe trait IComponent: Any {
             if visited {
                 let mut comp = match comp.get_mut(world) {
                     Ok(comp) => comp,
-                    Err(ComponentGetMutError::NotFound) => continue,
-                    Err(ComponentGetMutError::BorrowMutError(e)) => {
+                    Err(GetMutError::NotFound) => continue,
+                    Err(GetMutError::BorrowMutError(e)) => {
                         panic!("post_phys borrow error: {e}")
                     }
                 };
@@ -267,8 +267,8 @@ pub unsafe trait IComponent: Any {
 
                 let comp = match comp.get(world) {
                     Ok(comp) => comp,
-                    Err(ComponentGetError::NotFound) => continue,
-                    Err(ComponentGetError::BorrowError(e)) => panic!("post_phys borrow error: {e}"),
+                    Err(GetError::NotFound) => continue,
+                    Err(GetError::BorrowError(e)) => panic!("post_phys borrow error: {e}"),
                 };
 
                 let mut children: Vec<_> = comp.children().map(|c| (c, false)).collect();
@@ -300,8 +300,8 @@ pub unsafe trait IComponent: Any {
         while let Some(comp) = stack.pop() {
             let mut comp = match comp.get_mut(world) {
                 Ok(comp) => comp,
-                Err(ComponentGetMutError::NotFound) => continue,
-                Err(ComponentGetMutError::BorrowMutError(e)) => {
+                Err(GetMutError::NotFound) => continue,
+                Err(GetMutError::BorrowMutError(e)) => {
                     panic!("idle borrow error: {e}")
                 }
             };

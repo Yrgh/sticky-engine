@@ -25,7 +25,7 @@ pub mod world;
 
 /// Error returned when a Component is acquired immutably from an ID.
 #[derive(Error, Debug)]
-pub enum ComponentGetError {
+pub enum GetError {
     /// When the ID is invalid or out of date.
     #[error("component not found")]
     NotFound,
@@ -36,7 +36,7 @@ pub enum ComponentGetError {
 
 /// Error returned when a Component is acquired mutably from an ID.
 #[derive(Error, Debug)]
-pub enum ComponentGetMutError {
+pub enum GetMutError {
     /// When the ID is invalid or out of date.
     #[error("component not found")]
     NotFound,

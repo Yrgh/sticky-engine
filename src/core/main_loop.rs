@@ -3,11 +3,11 @@
 //! The engine is driven by the main loop, and Components can only be accessed
 //! through it. Async code must [join](crate::core::task::join_main) the main loop in order to
 //! interact with the [`World`].
-//! 
+//!
 //! There are two ways to create a main loop:
-//! 
+//!
 //! - For applications: [`run_main_loop`].
-//! 
+//!
 //! - For tests: [`ManualDriver::new`].
 
 use std::{
@@ -18,6 +18,7 @@ use std::{
 };
 
 use thiserror::Error;
+use tracing::{debug_span, error};
 use winit::{
     application::ApplicationHandler,
     error::{EventLoopError, OsError},
@@ -28,7 +29,10 @@ use winit::{
 use futures::channel::{mpsc, oneshot};
 
 use crate::core::{
-    component::ISlotId, engine_sync::EngineSync, level::LevelId, world::{CompleteInitError, GpuCreateMode, MainMode, World, WorldBuilder},
+    engine_sync::EngineSync,
+    input::InputHandler,
+    level::LevelId,
+    world::{CompleteInitError, GpuCreateMode, MainMode, World, WorldBuilder},
 };
 
 pub(crate) type Abstract = Box<dyn Any + Send + Sync>;
@@ -53,6 +57,8 @@ struct MainLoop {
 
     stable_accumulator: Instant,
     last_idle_time: Instant,
+
+    input_handler: InputHandler,
 }
 
 #[derive(Debug, Error)]
@@ -200,14 +206,10 @@ impl ApplicationHandler for MainLoop {
         if cause == winit::event::StartCause::Init {
             let _span = tracing::info_span!("engine_init").entered();
 
-            match self
-                .driver
-                .world
-                .complete_init(&mut self.world_builder)
-            {
+            match self.driver.world.complete_init(&mut self.world_builder) {
                 Ok(()) => {}
                 Err(e) => {
-                    tracing::error!("failed to initialize the engine: {e}");
+                    error!("failed to initialize the engine: {e}");
                     self.driver.world.unset_active_event_loop();
                     event_loop.exit();
                     return;
@@ -239,33 +241,71 @@ impl ApplicationHandler for MainLoop {
                 .expect("just got the window ID from the World");
 
             match event {
-                WindowEvent::CloseRequested => {
-                    if self.driver.world.is_main_window(id) {
-                        event_loop.exit();
-                        drop(window);
-                        self.driver.world.unset_active_event_loop();
-                        return;
-                    }
-
+                WindowEvent::CloseRequested if self.driver.world.is_main_window(id) => {
+                    event_loop.exit();
                     drop(window);
-                    self.driver.world.handle_window_event(id, &event);
+                    self.driver.world.unset_active_event_loop();
+                    return;
                 }
                 WindowEvent::RedrawRequested => match window.draw() {
                     Ok(()) => {}
-                    Err(e) => tracing::error!(window_id = ?id, "failed to draw to window: {e}"),
+                    Err(e) => error!(window_id = ?id, "failed to draw to window: {e}"),
                 },
                 WindowEvent::Resized(new_size) => {
                     window.on_resize(&self.driver.world, new_size);
                 }
                 event => {
-                    drop(window);
-                    self.driver.world.handle_window_event(id, &event);
+                    let src_level = window.level();
+
+                    if let Some(event) = self.input_handler.window_input(
+                        event,
+                        window.get_cursor_mut(),
+                    ) {
+                        drop(window);
+
+                        if event.is_global() {
+                            for level in self.driver.world.iter_levels() {
+                                level.raw_input(&self.driver.world, &event);
+                            }
+                        } else {
+                            let level = self
+                                .driver
+                                .world
+                                .get_level(src_level)
+                                .expect("level should exist since window exists");
+                            level.raw_input(&self.driver.world, &event);
+                        }
+                    }
                 }
             }
         } else {
             tracing::warn!(?window_id, "winit event for unknown window");
         }
 
+        if self.driver.downtime(Some(Duration::from_micros(150))) {
+            event_loop.exit();
+        }
+
+        self.driver.world.unset_active_event_loop();
+    }
+
+    fn device_event(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        _device_id: winit::event::DeviceId,
+        event: winit::event::DeviceEvent,
+    )
+    {
+        unsafe { self.driver.world.set_active_event_loop(event_loop) };
+
+        if let Some(event) = self.input_handler.device_input(event) {
+            debug_assert!(event.is_global());
+
+            for level in self.driver.world.iter_levels() {
+                level.raw_input(&self.driver.world, &event);
+            }
+        }
+        
         if self.driver.downtime(Some(Duration::from_micros(150))) {
             event_loop.exit();
         }
@@ -282,13 +322,21 @@ impl ApplicationHandler for MainLoop {
             gpu_api.cleanup_in_flight();
         }
 
-        unsafe { self.driver.world.flush_actions() };
+        while let Some(event) = self.input_handler.poll_controller_input() {
+            debug_assert!(event.is_global());
+
+            for level in self.driver.world.iter_levels() {
+                level.raw_input(&self.driver.world, &event);
+            }
+        }
 
         if self.physics_handling() {
             self.driver.world.unset_active_event_loop();
             event_loop.exit();
             return;
         }
+
+        // Idle and rendering
 
         if self.last_idle_time.elapsed() >= self.driver.world.engine().get_idle_min_delay()
             && self.driver.world.try_acquire_any_swapchain()
@@ -309,10 +357,13 @@ impl ApplicationHandler for MainLoop {
             if self.driver.world.get_renderer().is_some() {
                 match self.render() {
                     Ok(()) => {}
-                    Err(e) => tracing::error!("rendering failed: {e}"),
+                    Err(e) => error!("rendering failed: {e}"),
                 }
             }
         }
+
+        unsafe { self.driver.world.flush_actions() };
+        
 
         if let Some(gpu_api) = self.driver.world.get_gpu_api() {
             gpu_api.cleanup_in_flight();
@@ -357,6 +408,8 @@ pub enum RunMainLoopError {
     #[error("no asset manager set in builder")]
     /// Returned if the [`WorldBuilder`] did not have an `AssetManager` set.
     NoAssetManager,
+    #[error("error occurred initializing gilrs and was reported through tracing")]
+    GilrsReported,
 }
 
 /// Entry point for the engine.
@@ -392,10 +445,32 @@ pub unsafe fn run_main_loop(
         stable_rate: world_builder.stable_rate.into(),
         min_idle_delay: world_builder.min_idle_delay.into(),
 
-        asset_manager: world_builder.asset_manager.take().ok_or(RunMainLoopError::NoAssetManager)?,
+        asset_manager: world_builder
+            .asset_manager
+            .take()
+            .ok_or(RunMainLoopError::NoAssetManager)?,
 
         main_queue_async: job_async_tx,
         main_queue_sync: job_sync_tx,
+    };
+
+    let input_handler = match InputHandler::new() {
+        Ok(ih) => ih,
+        Err(e) => match *e {
+            gilrs::Error::NotImplemented(_) => {
+                error!("unsupported platform for gilrs");
+                return Err(RunMainLoopError::GilrsReported);
+            }
+            gilrs::Error::InvalidAxisToBtn => unreachable!(),
+            gilrs::Error::Other(e) => {
+                error!("gilrs failed to initialize: {e}");
+                return Err(RunMainLoopError::GilrsReported);
+            }
+            e => {
+                error!("gilrs failed to initialize: {e}");
+                return Err(RunMainLoopError::GilrsReported);
+            }
+        },
     };
 
     let mut main_loop = MainLoop {
@@ -405,12 +480,14 @@ pub unsafe fn run_main_loop(
 
             world: world_builder.finish_ish(Arc::new(engine)),
         },
-        
+
         world_builder,
         init_fn: Some(Box::new(init_fn)),
 
         stable_accumulator: Instant::now(),
         last_idle_time: Instant::now(),
+
+        input_handler,
     };
 
     let event_loop = EventLoop::new()?;
@@ -450,7 +527,7 @@ pub async fn queue_quit_async(engine: &EngineSync) -> Result<(), MainClosedError
 /// When writing tests, you don't want your code to be at the whim of `winit`
 /// and the event loop, so this driver allows you to manually send out physics
 /// ticks and idle ticks to test how your code works.
-/// 
+///
 /// Create one for testing using [`ManualDriver::new`], just how you would with
 /// [`run_main_loop`].
 pub struct ManualDriver {
@@ -475,6 +552,8 @@ pub enum ManualDriverNewError {
     GpuApiSet,
     #[error("attempted to create a main window")]
     MainWindow,
+    #[error("error occurred and was reported through tracing")]
+    Reported,
 }
 
 impl ManualDriver {
@@ -514,12 +593,7 @@ impl ManualDriver {
         downtime_timeout: Option<Duration>,
     ) -> bool {
         for level in self.world.iter_levels().filter(|l| l.is_active()) {
-            for id in level.iter_top_level() {
-                let mut comp = id
-                    .get_mut(&self.world)
-                    .expect("component was just acquired");
-                comp.pre_phys(&self.world, tick_rate.as_secs_f32());
-            }
+            level.pre_phys(&self.world, tick_rate.as_secs_f32());
         }
 
         if self.downtime(downtime_timeout) {
@@ -529,12 +603,7 @@ impl ManualDriver {
         // TODO: Physics sim
 
         for level in self.world.iter_levels().filter(|l| l.is_active()) {
-            for id in level.iter_top_level() {
-                let mut comp = id
-                    .get_mut(&self.world)
-                    .expect("component was just acquired");
-                comp.post_phys(&self.world, tick_rate.as_secs_f32());
-            }
+            level.post_phys(&self.world, tick_rate.as_secs_f32());
         }
 
         self.downtime(downtime_timeout)
@@ -542,12 +611,7 @@ impl ManualDriver {
 
     fn idle_internal(&mut self, delta: f32, downtime_timeout: Option<Duration>) -> bool {
         for level in self.world.iter_levels().filter(|l| l.is_active()) {
-            for id in level.iter_top_level() {
-                let mut comp = id
-                    .get_mut(&self.world)
-                    .expect("component was just acquired");
-                comp.idle(&self.world, delta);
-            }
+            level.idle(&self.world, delta);
         }
 
         self.downtime(downtime_timeout)
@@ -556,28 +620,30 @@ impl ManualDriver {
 
 impl ManualDriver {
     /// Create a new `ManualDriver` for testing.
-    /// 
+    ///
     /// There are a few restrictions:
-    /// 
+    ///
     /// - `world_builder` cannot attempt to create a GPU API or renderer. This
     ///   will return an error.
-    /// 
+    ///
     /// - `world_builder` cannot attempt to create a main window.
-    /// 
+    ///
     /// - There is no active event loop, so no creating windows after
     ///   initialization.
-    /// 
+    ///
     /// There a few upsides:
-    /// 
+    ///
     /// - Complete, manual control over when things happen
-    /// 
+    ///
     /// - Complete automated testing
-    /// 
+    ///
     /// - All other functionality remains
     pub fn new(
         mut world_builder: WorldBuilder,
         init_fn: impl FnOnce(&World) + 'static,
     ) -> Result<Self, ManualDriverNewError> {
+        let _span = debug_span!("init_ManualDriver").entered();
+
         if !matches!(world_builder.gpu_create_mode, GpuCreateMode::Dont) {
             return Err(ManualDriverNewError::GpuApiSet);
         }
@@ -585,16 +651,19 @@ impl ManualDriver {
         if matches!(world_builder.main_mode, MainMode::Window) {
             return Err(ManualDriverNewError::MainWindow);
         }
-        
+
         let (job_async_tx, job_async_rx) = mpsc::channel(MAIN_QUEUE_ASYNC_LEN);
         let (job_sync_tx, job_sync_rx) = std::sync::mpsc::channel();
 
         let engine = EngineSync {
             stable_rate: world_builder.stable_rate.into(),
             min_idle_delay: world_builder.min_idle_delay.into(),
-    
-            asset_manager: world_builder.asset_manager.take().ok_or(ManualDriverNewError::NoAssetManager)?,
-    
+
+            asset_manager: world_builder
+                .asset_manager
+                .take()
+                .ok_or(ManualDriverNewError::NoAssetManager)?,
+
             main_queue_async: job_async_tx,
             main_queue_sync: job_sync_tx,
         };
@@ -602,28 +671,28 @@ impl ManualDriver {
         let mut self_ = Self {
             jobs_async: job_async_rx,
             jobs_sync: job_sync_rx,
-        
+
             world: world_builder.finish_ish(Arc::new(engine)),
         };
 
         match self_.world.complete_init(&mut world_builder) {
-            Ok(()) => {},
+            Ok(()) => {}
             Err(CompleteInitError::MainWindowError(_)) => unreachable!(),
             Err(CompleteInitError::RendererInitError(_)) => unreachable!(),
         }
-        
+
         init_fn(&self_.world);
 
         Ok(self_)
     }
 
     /// Tick the physics simulation.
-    /// 
+    ///
     /// This will send `pre_phys` and `post_phys` events surrounding the physics
     /// sim, just how it would periodically through [`run_main_loop`]. It will
     /// use the [stable tick rate](EngineSync::get_stable_tick_rate) set in the
     /// [`EngineSync`] as the delta time.
-    /// 
+    ///
     /// Returns whether a quit was requested. You do not have to honor it, but
     /// it may have cancelled some actions.
     pub fn tick_physics(&mut self) -> bool {
@@ -631,10 +700,10 @@ impl ManualDriver {
     }
 
     /// Emit an idle tick.
-    /// 
+    ///
     /// This will send `idle` events with the given `delta`. `Level`s will not
     /// collect render data.
-    /// 
+    ///
     /// Returns whether a quit was requested. You do not have to honor it, but
     /// it may have cancelled some actions.
     pub fn tick_idle(&mut self, delta: f32) -> bool {
@@ -647,7 +716,7 @@ impl ManualDriver {
     }
 
     /// Returns the [`EngineSync`] the [`World`] owns, pre-cloned.
-    /// 
+    ///
     /// This is a shortcut for `self.world().engine().clone()`.
     pub fn engine(&self) -> Arc<EngineSync> {
         self.world.engine().clone()

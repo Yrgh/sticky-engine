@@ -38,9 +38,9 @@ use crate::core::{
 /// # struct Mesh {}
 /// # impl core::asset::AutoAsset for Mesh {}
 /// async fn place_mesh(engine: &EngineSync, level: LevelId) -> anyhow::Result<()> {
-///     let mesh: Asset<Mesh> = engine.asset_manager.get_asset_async("mesh.glb").await?;
+///     let mesh: Asset<Mesh> = engine.asset_manager().get_asset_async("mesh.glb").await?;
 /// 
-///     join_main(move |world| -> anyhow::Result<()> {
+///     join_main(engine, move |world| -> anyhow::Result<()> {
 ///         world
 ///             .get_level(level)
 ///             .ok_or_else(|| anyhow::anyhow!("level not found: {level:?}"))?

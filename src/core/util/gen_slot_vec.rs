@@ -2,7 +2,7 @@
 
 use std::cell::{BorrowMutError, Cell, Ref, RefCell, RefMut};
 
-use crate::core::{ComponentGetError, ComponentGetMutError, util::sentinel::SentinelMaxU32};
+use crate::core::{GetError, GetMutError, util::sentinel::SentinelMaxU32};
 
 enum Storage<T> {
     Occupied(T),
@@ -59,24 +59,24 @@ impl<T> RefCellGenSlotVec<T> {
     }
 
     /// Tries to remove the value at the given g
-    pub fn remove(&self, index: SlotIndex) -> Result<bool, BorrowMutError> {
+    pub fn remove(&self, index: SlotIndex) -> Result<(), GetMutError> {
         let Some(cell) = self.data.get(index.pidx as usize) else {
-            return Ok(false);
+            return Err(GetMutError::NotFound);
         };
 
         let mut cell = cell.try_borrow_mut()?;
         let cell_gidx = cell.0;
 
         match &mut cell.1 {
-            Storage::Vacant(_) => Ok(false),
-            Storage::Occupied(_) | Storage::Reserved if index.gidx != cell_gidx => Ok(false),
+            Storage::Vacant(_) => Err(GetMutError::NotFound),
+            Storage::Occupied(_) | Storage::Reserved if index.gidx != cell_gidx => Err(GetMutError::NotFound),
             Storage::Occupied(_) | Storage::Reserved => {
                 cell.0 = cell_gidx.wrapping_add(1);
                 cell.1 = Storage::Vacant(self.free_head.take());
                 self.free_head.set(SentinelMaxU32::from_some(index.pidx));
                 self.len.set(self.len.get() - 1);
 
-                Ok(true)
+                Ok(())
             }
         }
     }
@@ -204,22 +204,22 @@ impl<T> RefCellGenSlotVec<T> {
     /// # Borrows
     ///
     /// Immutably borrows the value at the given index if it is valid.
-    pub fn acquire(&self, index: SlotIndex) -> Result<Ref<'_, T>, ComponentGetError> {
+    pub fn acquire(&self, index: SlotIndex) -> Result<Ref<'_, T>, GetError> {
         let cell = self
             .data
             .get(index.pidx as usize)
-            .ok_or(ComponentGetError::NotFound)?
+            .ok_or(GetError::NotFound)?
             .try_borrow()?;
 
         if cell.0 != index.gidx {
-            return Err(ComponentGetError::NotFound);
+            return Err(GetError::NotFound);
         }
 
         Ref::filter_map(cell, |c| match &c.1 {
             Storage::Occupied(v) => Some(v),
             _ => None,
         })
-        .map_err(|_| ComponentGetError::NotFound)
+        .map_err(|_| GetError::NotFound)
     }
 
     /// Gets and borrows a value mutably given the index.
@@ -227,22 +227,22 @@ impl<T> RefCellGenSlotVec<T> {
     /// # Borrows
     ///
     /// Mutably borrows the value at the given index if it is valid.
-    pub fn acquire_mut(&self, index: SlotIndex) -> Result<RefMut<'_, T>, ComponentGetMutError> {
+    pub fn acquire_mut(&self, index: SlotIndex) -> Result<RefMut<'_, T>, GetMutError> {
         let cell = self
             .data
             .get(index.pidx as usize)
-            .ok_or(ComponentGetMutError::NotFound)?
+            .ok_or(GetMutError::NotFound)?
             .try_borrow_mut()?;
 
         if cell.0 != index.gidx {
-            return Err(ComponentGetMutError::NotFound);
+            return Err(GetMutError::NotFound);
         }
 
         RefMut::filter_map(cell, |c| match &mut c.1 {
             Storage::Occupied(v) => Some(v),
             _ => None,
         })
-        .map_err(|_| ComponentGetMutError::NotFound)
+        .map_err(|_| GetMutError::NotFound)
     }
 
     /// Returns an iterator over all values, borrowed immutably.

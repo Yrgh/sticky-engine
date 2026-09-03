@@ -14,11 +14,17 @@ use std::{
 use thiserror::Error;
 
 use winit::{
-    event::WindowEvent, event_loop::ActiveEventLoop, window::{Window, WindowAttributes},
+    event_loop::ActiveEventLoop,
+    window::{Window, WindowAttributes},
 };
 
 use crate::core::{
-    asset::AssetManager, engine_sync::EngineSync, gpu_api::{GpuApi, IGpuApi, IRenderer}, level::{Level, LevelId, LevelIdOwned}, util::gen_slot_vec::{RefCellGenSlotVec, SlotIndex}, window::{IWindowBoth, RootWindow, WindowId, WindowIdOwned},
+    asset::AssetManager,
+    engine_sync::EngineSync,
+    gpu_api::{GpuApi, IGpuApi, IRenderer},
+    level::{Level, LevelId, LevelIdOwned},
+    util::gen_slot_vec::{RefCellGenSlotVec, SlotIndex},
+    window::{IWindowBoth, RootWindow, WindowId, WindowIdOwned},
 };
 
 use crate::core::{util::sentinel::SentinelMaxU32, window::IWindow};
@@ -51,7 +57,7 @@ pub struct World {
     gpu_api: Option<GpuApi>,
     renderer: Option<Rc<dyn IRenderer>>,
 
-    engine_sync: Arc<EngineSync>
+    engine_sync: Arc<EngineSync>,
 }
 
 impl World {
@@ -93,8 +99,6 @@ impl World {
 }
 
 impl World {
-    
-
     /// Processes all queued level/window deletions.
     ///
     /// # Safety
@@ -404,19 +408,6 @@ impl World {
         })
     }
 
-    /// Forwards a window event to the window it belongs to.
-    ///
-    /// # Borrows
-    ///
-    /// Mutably borrows the target window's storage slot while handling the
-    /// event.
-    pub(crate) fn handle_window_event(&self, id: WindowId, event: &WindowEvent) {
-        let Some(mut window) = self.get_window_mut_int(id) else {
-            return;
-        };
-        window.on_input_event(self, event);
-    }
-
     /// Returns an immutable iterator over every [`IWindow`], paired with its
     /// [`WindowId`].
     ///
@@ -550,7 +541,7 @@ pub(crate) enum CompleteInitError {
     #[error("failed to initialize renderer: {0}")]
     RendererInitError(anyhow::Error),
     #[error("failed to create root window: {0}")]
-    MainWindowError(CreateRootWindowError)
+    MainWindowError(CreateRootWindowError),
 }
 
 impl World {
@@ -583,7 +574,9 @@ impl World {
         }
 
         if let MainMode::Window = &builder.main_mode {
-            let window = self.create_root_window(Window::default_attributes()).map_err(CompleteInitError::MainWindowError)?;
+            let window = self
+                .create_root_window(Window::default_attributes())
+                .map_err(CompleteInitError::MainWindowError)?;
             self.main_window.set(Some(window.handle()));
             self.main_level.set(Some(
                 self.get_window(window.handle())

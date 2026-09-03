@@ -38,7 +38,7 @@
 //! Many functions will have a "Borrows" section that describes which Components
 //! or other [`RefCell`](std::cell::RefCell)s the function will or may borrow,
 //! and whether the borrow is immutable or mutable. These are warnings, as some
-//! functions may fail (see [`ComponentGetError`](core::ComponentGetError)) or
+//! functions may fail (see [`GetError`](core::GetError)) or
 //! unexpectedly panic unless you respect the borrowing rules.
 //!
 //! # Dependencies and feature flags

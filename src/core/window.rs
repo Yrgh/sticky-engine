@@ -13,13 +13,10 @@
 use std::{any::Any, rc::Rc, sync::Arc};
 
 use thiserror::Error;
-use winit::{dpi::PhysicalSize, event::WindowEvent, window::Window as OsWindow};
+use winit::{dpi::PhysicalSize, window::Window as OsWindow};
 
 use crate::core::{
-    gpu_api::{BoxedInstructions, IRenderer, ISurface},
-    level::LevelId,
-    util::gen_slot_vec::SlotIndex,
-    world::World,
+    gpu_api::{BoxedInstructions, IRenderer, ISurface}, level::LevelId, math::Vec2, util::gen_slot_vec::SlotIndex, world::World,
 };
 
 mod private {
@@ -95,8 +92,6 @@ pub(crate) trait IWindowInt: Any {
         None
     }
 
-    fn on_input_event(&mut self, _world: &World, _event: &WindowEvent);
-
     fn on_resize(&mut self, _world: &World, _size: PhysicalSize<u32>);
 
     fn as_any_i(&self) -> &dyn Any;
@@ -108,6 +103,8 @@ pub(crate) trait IWindowInt: Any {
     fn resume(&mut self);
 
     fn set_instructions(&mut self, instructions: BoxedInstructions);
+
+    fn get_cursor_mut(&mut self) -> &mut Option<Vec2>;
 
     /// Attempts a non-blocking acquisition of the next swapchain image.
     ///
@@ -183,16 +180,13 @@ impl<T: IWindowInt> IWindow for T {
 pub struct RootWindow {
     id: WindowId,
     level: LevelId,
+    // None = not on window
+    cursor: Option<Vec2>,
     size: PhysicalSize<u32>,
     renderer: Rc<dyn IRenderer>,
     surface: Option<Box<dyn ISurface>>,
     instructions: Option<BoxedInstructions>,
-    /// The OS window backing this surface.
-    ///
-    /// Declared last so it is dropped last: the Vulkan surface/swapchain must
-    /// be destroyed before the window, because the window owns the underlying
-    /// Wayland `wl_surface`. Destroying the swapchain after the window is gone
-    /// makes the driver call into a freed `wl_surface` and segfault.
+    // Declared last so it is dropped last.
     window: Arc<OsWindow>,
 }
 
@@ -212,6 +206,7 @@ impl RootWindow {
             id,
             level,
             size,
+            cursor: None,
             renderer,
             surface: None,
             instructions: None,
@@ -242,8 +237,6 @@ impl IWindowInt for RootWindow {
     fn as_os_i(&self) -> Option<&OsWindow> {
         Some(&self.window)
     }
-
-    fn on_input_event(&mut self, _world: &World, _event: &WindowEvent) {}
 
     fn on_resize(&mut self, _world: &World, size: PhysicalSize<u32>) {
         self.size = size;
@@ -301,6 +294,10 @@ impl IWindowInt for RootWindow {
 
     fn set_instructions(&mut self, instructions: BoxedInstructions) {
         self.instructions = Some(instructions);
+    }
+
+    fn get_cursor_mut(&mut self) -> &mut Option<Vec2> {
+        &mut self.cursor
     }
 
     fn switch_level(&mut self, level: LevelId) {

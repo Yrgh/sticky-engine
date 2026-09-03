@@ -381,10 +381,10 @@ pub fn comp_def_inner(input: TokenStream1) -> TokenStream1 {
                     > {
                         match self.#name.get(world) {
                             Ok(tr) => Ok(tr),
-                            Err(#engine_crate::core::ComponentGetError::NotFound) => {
+                            Err(#engine_crate::core::GetError::NotFound) => {
                                 panic!("child component should always be accessible")
                             }
-                            Err(#engine_crate::core::ComponentGetError::BorrowError(err)) => {
+                            Err(#engine_crate::core::GetError::BorrowError(err)) => {
                                 Err(err)
                             }
                         }
@@ -400,10 +400,10 @@ pub fn comp_def_inner(input: TokenStream1) -> TokenStream1 {
                     > {
                         match self.#name.get_mut(world) {
                             Ok(tr) => Ok(tr),
-                            Err(#engine_crate::core::ComponentGetMutError::NotFound) => {
+                            Err(#engine_crate::core::GetMutError::NotFound) => {
                                 panic!("child component should always be accessible")
                             }
-                            Err(#engine_crate::core::ComponentGetMutError::BorrowMutError(err)) => {
+                            Err(#engine_crate::core::GetMutError::BorrowMutError(err)) => {
                                 Err(err)
                             }
                         }
@@ -449,10 +449,10 @@ pub fn comp_def_inner(input: TokenStream1) -> TokenStream1 {
                     > {
                         match self.#name.get(world) {
                             Ok(tr) => Ok(tr),
-                            Err(#engine_crate::core::ComponentGetError::NotFound) => {
+                            Err(#engine_crate::core::GetError::NotFound) => {
                                 panic!("child component should always be accessible")
                             }
-                            Err(#engine_crate::core::ComponentGetError::BorrowError(err)) => {
+                            Err(#engine_crate::core::GetError::BorrowError(err)) => {
                                 Err(err)
                             }
                         }
@@ -468,10 +468,10 @@ pub fn comp_def_inner(input: TokenStream1) -> TokenStream1 {
                     > {
                         match self.#name.get_mut(world) {
                             Ok(tr) => Ok(tr),
-                            Err(#engine_crate::core::ComponentGetMutError::NotFound) => {
+                            Err(#engine_crate::core::GetMutError::NotFound) => {
                                 panic!("child component should always be accessible")
                             }
-                            Err(#engine_crate::core::ComponentGetMutError::BorrowMutError(err)) => {
+                            Err(#engine_crate::core::GetMutError::BorrowMutError(err)) => {
                                 Err(err)
                             }
                         }
@@ -533,10 +533,10 @@ pub fn comp_def_inner(input: TokenStream1) -> TokenStream1 {
                     >> {
                         Some(match self.#name.as_ref()?.get(world) {
                             Ok(tr) => Ok(tr),
-                            Err(#engine_crate::core::ComponentGetError::NotFound) => {
+                            Err(#engine_crate::core::GetError::NotFound) => {
                                 panic!("child component should always be accessible")
                             }
-                            Err(#engine_crate::core::ComponentGetError::BorrowError(err)) => {
+                            Err(#engine_crate::core::GetError::BorrowError(err)) => {
                                 Err(err)
                             }
                         })
@@ -552,10 +552,10 @@ pub fn comp_def_inner(input: TokenStream1) -> TokenStream1 {
                     >> {
                         Some(match self.#name.as_ref()?.get_mut(world) {
                             Ok(tr) => Ok(tr),
-                            Err(#engine_crate::core::ComponentGetMutError::NotFound) => {
+                            Err(#engine_crate::core::GetMutError::NotFound) => {
                                 panic!("child component should always be accessible")
                             }
-                            Err(#engine_crate::core::ComponentGetMutError::BorrowMutError(err)) => {
+                            Err(#engine_crate::core::GetMutError::BorrowMutError(err)) => {
                                 Err(err)
                             }
                         })
@@ -654,10 +654,10 @@ pub fn comp_def_inner(input: TokenStream1) -> TokenStream1 {
                     >> {
                         Some(match self.#name.get(index)?.get(world) {
                             Ok(tr) => Ok(tr),
-                            Err(#engine_crate::core::ComponentGetError::NotFound) => {
+                            Err(#engine_crate::core::GetError::NotFound) => {
                                 panic!("child component should always be accessible")
                             }
-                            Err(#engine_crate::core::ComponentGetError::BorrowError(err)) => {
+                            Err(#engine_crate::core::GetError::BorrowError(err)) => {
                                 Err(err)
                             }
                         })
@@ -674,10 +674,10 @@ pub fn comp_def_inner(input: TokenStream1) -> TokenStream1 {
                     >> {
                         Some(match self.#name.get(index)?.get_mut(world) {
                             Ok(tr) => Ok(tr),
-                            Err(#engine_crate::core::ComponentGetMutError::NotFound) => {
+                            Err(#engine_crate::core::GetMutError::NotFound) => {
                                 panic!("child component should always be accessible")
                             }
-                            Err(#engine_crate::core::ComponentGetMutError::BorrowMutError(err)) => {
+                            Err(#engine_crate::core::GetMutError::BorrowMutError(err)) => {
                                 Err(err)
                             }
                         })

@@ -6,14 +6,18 @@
 
 use std::{
     any::{Any, TypeId},
-    cell::{Cell, Ref, RefCell, RefMut},
+    cell::{BorrowMutError, Cell, Ref, RefCell, RefMut},
+    collections::{HashMap, hash_map::Entry},
 };
 
 use elsa::FrozenMap;
+use thiserror::Error;
 
 use crate::core::{
-    ComponentGetError, ComponentGetMutError,
+    GetError, GetMutError,
     component::{ComponentId, DynComponentId, IComponent, ISlotId},
+    input::{InputEvent, SInputReceiverId},
+    level::script::IScript,
     relations::{BuildTypeIdHasher, RELATIONS},
     rendering::RenderingQueue,
     util::gen_slot_vec::{RefCellGenSlotVec, SlotIndex},
@@ -30,11 +34,8 @@ trait IColumn: Any {
 
     fn get_pairs(&self) -> Box<dyn Iterator<Item = SlotIndex> + '_>;
 
-    fn get_dyn(&self, index: SlotIndex) -> Result<Ref<'_, dyn IComponent>, ComponentGetError>;
-    fn get_dyn_mut(
-        &self,
-        index: SlotIndex,
-    ) -> Result<RefMut<'_, dyn IComponent>, ComponentGetMutError>;
+    fn get_dyn(&self, index: SlotIndex) -> Result<Ref<'_, dyn IComponent>, GetError>;
+    fn get_dyn_mut(&self, index: SlotIndex) -> Result<RefMut<'_, dyn IComponent>, GetMutError>;
 }
 
 impl<C: IComponent> IColumn for RefCellGenSlotVec<C> {
@@ -50,14 +51,11 @@ impl<C: IComponent> IColumn for RefCellGenSlotVec<C> {
         Box::new(self.ids())
     }
 
-    fn get_dyn(&self, index: SlotIndex) -> Result<Ref<'_, dyn IComponent>, ComponentGetError> {
+    fn get_dyn(&self, index: SlotIndex) -> Result<Ref<'_, dyn IComponent>, GetError> {
         Ok(Ref::map(self.acquire(index)?, |c| -> &dyn IComponent { c }))
     }
 
-    fn get_dyn_mut(
-        &self,
-        index: SlotIndex,
-    ) -> Result<RefMut<'_, dyn IComponent>, ComponentGetMutError> {
+    fn get_dyn_mut(&self, index: SlotIndex) -> Result<RefMut<'_, dyn IComponent>, GetMutError> {
         Ok(RefMut::map(
             self.acquire_mut(index)?,
             |c| -> &mut dyn IComponent { c },
@@ -75,11 +73,24 @@ pub struct Level {
     component_columns: FrozenMap<TypeId, Box<dyn IColumn>, BuildTypeIdHasher>,
     top_level: RefCell<Vec<DynComponentId>>,
 
+    scripts: RefCell<HashMap<TypeId, Box<dyn IScript>>>,
+
     rendering_queue: RefCell<RenderingQueue>,
 
     window: Cell<Option<WindowId>>,
 
     pub(crate) active: Cell<bool>,
+}
+
+#[derive(Error)]
+/// Error produced by [`Level::add_script`].
+pub enum AddScriptError<S> {
+    #[error("borrow error: {0}")]
+    /// Error trying to mutably borrow the Scripts
+    Borrow(#[from] BorrowMutError),
+    #[error("Script for type already exists")]
+    /// Returned if a Script of the given type is already set on the [`Level`]
+    AlreadyExists(S),
 }
 
 impl Level {
@@ -88,9 +99,10 @@ impl Level {
             self_idx: Cell::new(Some(self_idx)),
             component_columns: FrozenMap::default(),
             top_level: RefCell::new(Vec::new()),
+            scripts: RefCell::new(HashMap::new()),
             rendering_queue: RefCell::new(RenderingQueue::new()),
             window: Cell::new(None),
-            active: Cell::new(false)
+            active: Cell::new(false),
         }
     }
 
@@ -107,9 +119,9 @@ impl Level {
     }
 
     /// Sets whether this `Level` is active or not.
-    /// 
+    ///
     /// See [`Self::is_active`].
-    /// 
+    ///
     /// `Level`s bound to a window are always active, regardless of what this is set to.
     pub fn set_active(&self, active: bool) -> bool {
         self.active.set(active);
@@ -117,7 +129,7 @@ impl Level {
     }
 
     /// Returns whether this `Level` is active or not.
-    /// 
+    ///
     /// A `Level` starts as inactive, which means it is ignored for rendering
     /// and events like `idle`. Note that a `Level` bound to a window is always active.
     pub fn is_active(&self) -> bool {
@@ -165,10 +177,9 @@ impl Level {
     pub fn insert_component_internal<C: IComponent>(&self, value: C) -> ComponentId<C> {
         let column = match self.component_columns.get(&TypeId::of::<C>()) {
             Some(o) => o,
-            None => self.component_columns.insert(
-                TypeId::of::<C>(),
-                Box::new(RefCellGenSlotVec::<C>::new()),
-            ),
+            None => self
+                .component_columns
+                .insert(TypeId::of::<C>(), Box::new(RefCellGenSlotVec::<C>::new())),
         };
 
         if column.len() == u32::MAX {
@@ -197,10 +208,9 @@ impl Level {
     pub fn reserve_slot_internal<C: IComponent>(&self) -> ComponentId<C> {
         let column = match self.component_columns.get(&TypeId::of::<C>()) {
             Some(o) => o,
-            None => self.component_columns.insert(
-                TypeId::of::<C>(),
-                Box::new(RefCellGenSlotVec::<C>::new()),
-            ),
+            None => self
+                .component_columns
+                .insert(TypeId::of::<C>(), Box::new(RefCellGenSlotVec::<C>::new())),
         };
 
         if column.len() == u32::MAX {
@@ -252,15 +262,14 @@ impl Level {
     pub fn acquire_component_internal<C: IComponent>(
         &self,
         slot: SlotIndex,
-    ) -> Result<Ref<'_, C>, ComponentGetError> {
+    ) -> Result<Ref<'_, C>, GetError> {
         let column = self
             .component_columns
             .get(&TypeId::of::<C>())
-            .ok_or(ComponentGetError::NotFound)?;
+            .ok_or(GetError::NotFound)?;
 
         let column =
-            <dyn Any>::downcast_ref::<RefCellGenSlotVec<C>>(column)
-                .ok_or(ComponentGetError::NotFound)?;
+            <dyn Any>::downcast_ref::<RefCellGenSlotVec<C>>(column).ok_or(GetError::NotFound)?;
 
         column.acquire(slot)
     }
@@ -279,15 +288,14 @@ impl Level {
     pub fn acquire_component_internal_mut<C: IComponent>(
         &self,
         slot: SlotIndex,
-    ) -> Result<RefMut<'_, C>, ComponentGetMutError> {
+    ) -> Result<RefMut<'_, C>, GetMutError> {
         let column = self
             .component_columns
             .get(&TypeId::of::<C>())
-            .ok_or(ComponentGetMutError::NotFound)?;
+            .ok_or(GetMutError::NotFound)?;
 
         let column =
-            <dyn Any>::downcast_ref::<RefCellGenSlotVec<C>>(column)
-                .ok_or(ComponentGetMutError::NotFound)?;
+            <dyn Any>::downcast_ref::<RefCellGenSlotVec<C>>(column).ok_or(GetMutError::NotFound)?;
 
         column.acquire_mut(slot)
     }
@@ -307,11 +315,11 @@ impl Level {
         &self,
         tyid: TypeId,
         slot: SlotIndex,
-    ) -> Result<Ref<'_, dyn IComponent>, ComponentGetError> {
+    ) -> Result<Ref<'_, dyn IComponent>, GetError> {
         let column = self
             .component_columns
             .get(&tyid)
-            .ok_or(ComponentGetError::NotFound)?;
+            .ok_or(GetError::NotFound)?;
 
         column.get_dyn(slot)
     }
@@ -331,11 +339,11 @@ impl Level {
         &self,
         tyid: TypeId,
         slot: SlotIndex,
-    ) -> Result<RefMut<'_, dyn IComponent>, ComponentGetMutError> {
+    ) -> Result<RefMut<'_, dyn IComponent>, GetMutError> {
         let column = self
             .component_columns
             .get(&tyid)
-            .ok_or(ComponentGetMutError::NotFound)?;
+            .ok_or(GetMutError::NotFound)?;
 
         column.get_dyn_mut(slot)
     }
@@ -375,7 +383,7 @@ impl Level {
     }
 
     /// Returns an iterator over the IDs of all Components in the top level list.
-    pub fn iter_top_level(&self) -> impl Iterator<Item = DynComponentId> {
+    pub fn iter_top_level(&self) -> impl Iterator<Item = DynComponentId> + 'static {
         self.top_level.borrow().clone().into_iter()
     }
 
@@ -388,13 +396,13 @@ impl Level {
     /// [`destroy`](IComponent::destroy).
     pub fn remove_top_level(&self, world: &World, id: &DynComponentId) -> bool {
         let mut top_level = self.top_level.borrow_mut();
-        
+
         let Some(position) = top_level.iter().position(|id2| id2 == id) else {
             return false;
         };
-        
+
         top_level.remove(position);
-        
+
         id.get_mut(world).expect("id is in world").destroy(world);
         let (slot, tyid) = id.acquire_parts();
         self.remove_component_internal(tyid, slot);
@@ -412,8 +420,8 @@ impl Level {
         let Some(column) = self.component_columns.get(&TypeId::of::<C>()) else {
             return Box::new(std::iter::empty());
         };
-        let column = <dyn Any>::downcast_ref::<RefCellGenSlotVec<C>>(column)
-            .expect("column is for type C");
+        let column =
+            <dyn Any>::downcast_ref::<RefCellGenSlotVec<C>>(column).expect("column is for type C");
 
         Box::new(column.iter())
     }
@@ -430,8 +438,8 @@ impl Level {
         let Some(column) = self.component_columns.get(&TypeId::of::<C>()) else {
             return Box::new(std::iter::empty());
         };
-        let column = <dyn Any>::downcast_ref::<RefCellGenSlotVec<C>>(column)
-            .expect("column is for type C");
+        let column =
+            <dyn Any>::downcast_ref::<RefCellGenSlotVec<C>>(column).expect("column is for type C");
 
         Box::new(column.iter_mut())
     }
@@ -444,7 +452,7 @@ impl Level {
     /// iteration.
     pub fn all_matching_ids<D: ISlotId>(&self) -> impl Iterator<Item = D> {
         let self_id = self.id();
-        RELATIONS.iter_slot_tys::<D>().flat_map(move |tyid| {
+        RELATIONS.iter_slot_types::<D>().flat_map(move |tyid| {
             // If the column exists, get all components in it.
             // If it doesn't, we need to match the type, so create a new Box
             match self.component_columns.get(&tyid) {
@@ -453,6 +461,115 @@ impl Level {
             }
             .map(move |slot| unsafe { D::from_parts(slot, self_id, tyid) })
         })
+    }
+
+    /// Get the Script associated with the given ID.
+    ///
+    /// # Borrows
+    ///
+    /// Borrows **all** Scripts mutably.
+    pub fn get_script<S: IScript>(&self) -> Result<Ref<'_, S>, GetError> {
+        Ref::filter_map(self.scripts.try_borrow()?, |m| {
+            Some(
+                m.get(&TypeId::of::<S>())?
+                    .downcast_ref()
+                    .expect("typed ID should match stored type"),
+            )
+        })
+        .map_err(|_| GetError::NotFound)
+    }
+
+    /// Get the Script associated with the given ID.
+    ///
+    /// # Borrows
+    ///
+    /// Borrows **all** Scripts mutably.
+    pub fn get_script_mut<S: IScript>(&self) -> Result<RefMut<'_, S>, GetMutError> {
+        RefMut::filter_map(self.scripts.try_borrow_mut()?, |m| {
+            Some(
+                m.get_mut(&TypeId::of::<S>())?
+                    .downcast_mut()
+                    .expect("typed ID should match stored type"),
+            )
+        })
+        .map_err(|_| GetMutError::NotFound)
+    }
+
+    /// Remove a Script by static type.
+    ///
+    /// # Borrows
+    ///
+    /// Borrows **all** Scripts immutably.
+    pub fn remove_script<S: IScript>(&self) -> Result<(), GetMutError> {
+        if self
+            .scripts
+            .try_borrow_mut()?
+            .remove(&TypeId::of::<S>())
+            .is_some()
+        {
+            Ok(())
+        } else {
+            Err(GetMutError::NotFound)
+        }
+    }
+
+    /// Adds a new script
+    pub fn add_script<S: IScript>(
+        &self,
+        world: &World,
+        script: S,
+    ) -> Result<(), AddScriptError<S>> {
+        let mut scripts = self.scripts.try_borrow_mut()?;
+        match scripts.entry(TypeId::of::<S>()) {
+            Entry::Occupied(_) => return Err(AddScriptError::AlreadyExists(script)),
+            Entry::Vacant(v) => v.insert(Box::new(script)).post_init(world, self),
+        }
+        Ok(())
+    }
+
+    pub(crate) fn idle(&self, world: &World, delta: f32) {
+        for script in self.scripts.borrow_mut().values_mut() {
+            script.idle(world, self, delta);
+        }
+
+        for id in self.iter_top_level() {
+            let mut comp = id.get_mut(world).expect("component was just acquired");
+            comp.idle(world, delta);
+        }
+    }
+
+    pub(crate) fn pre_phys(&self, world: &World, delta: f32) {
+        for script in self.scripts.borrow_mut().values_mut() {
+            script.pre_phys(world, self, delta);
+        }
+
+        for id in self.iter_top_level() {
+            let mut comp = id.get_mut(world).expect("component was just acquired");
+            comp.pre_phys(world, delta);
+        }
+    }
+
+    pub(crate) fn post_phys(&self, world: &World, delta: f32) {
+        for script in self.scripts.borrow_mut().values_mut() {
+            script.post_phys(world, self, delta);
+        }
+
+        for id in self.iter_top_level() {
+            let mut comp = id.get_mut(world).expect("component was just acquired");
+            comp.post_phys(world, delta);
+        }
+    }
+
+    pub(crate) fn raw_input(&self, world: &World, event: &InputEvent) {
+        for script in self.scripts.borrow_mut().values_mut() {
+            script.raw_input(world, self, event);
+        }
+
+        for comp in self.all_matching_ids::<SInputReceiverId>() {
+            comp.get_mut(world)
+                .expect("component was just acquired")
+                .raw_input(world, event);
+        }
     }
 }
 

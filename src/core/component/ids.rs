@@ -7,7 +7,7 @@ use std::{
 };
 
 use crate::core::{
-    ComponentGetError, ComponentGetMutError,
+    GetError, GetMutError,
     level::{Level, LevelId},
     relations::RELATIONS,
     util::gen_slot_vec::SlotIndex,
@@ -22,11 +22,15 @@ use super::*;
 ///
 /// Implementations of [`Hash`](std::hash::Hash) must match the following:
 ///
-/// ```rust,ignore
+/// ```rust
+/// # struct X { slot: u8, lidx: u8 }
+/// # impl X {
 /// fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+///     # use std::hash::Hash;
 ///     self.slot.hash(state);
 ///     self.lidx.hash(state);
 /// }
+/// # }
 /// ```
 ///
 /// [`PartialEq`] must compare `slot` and `lidx`. Comparing type IDs is not necessary.
@@ -58,7 +62,7 @@ pub unsafe trait ISlotId: Any + std::hash::Hash + PartialEq + Eq + Clone {
     ///
     /// Immutably borrows the referenced Component's slot until the returned
     /// [`Ref`] is dropped.
-    fn get<'w>(&self, world: &'w World) -> Result<Ref<'w, Self::TraitObject>, ComponentGetError>;
+    fn get<'w>(&self, world: &'w World) -> Result<Ref<'w, Self::TraitObject>, GetError>;
 
     /// Try to access this ID mutably.
     ///
@@ -71,7 +75,7 @@ pub unsafe trait ISlotId: Any + std::hash::Hash + PartialEq + Eq + Clone {
     fn get_mut<'w>(
         &self,
         world: &'w World,
-    ) -> Result<RefMut<'w, Self::TraitObject>, ComponentGetMutError>;
+    ) -> Result<RefMut<'w, Self::TraitObject>, GetMutError>;
 
     /// Returns the [`Level`] of the Component this ID references.
     ///
@@ -190,20 +194,20 @@ unsafe impl<C: IComponent> ISlotId for ComponentId<C> {
         (self.slot, TypeId::of::<C>())
     }
 
-    fn get<'w>(&self, world: &'w World) -> Result<Ref<'w, Self::TraitObject>, ComponentGetError> {
+    fn get<'w>(&self, world: &'w World) -> Result<Ref<'w, Self::TraitObject>, GetError> {
         world
             .get_level(self.lidx)
-            .ok_or(ComponentGetError::NotFound)?
+            .ok_or(GetError::NotFound)?
             .acquire_component_internal(self.slot)
     }
 
     fn get_mut<'w>(
         &self,
         world: &'w World,
-    ) -> Result<RefMut<'w, Self::TraitObject>, ComponentGetMutError> {
+    ) -> Result<RefMut<'w, Self::TraitObject>, GetMutError> {
         world
             .get_level(self.lidx)
-            .ok_or(ComponentGetMutError::NotFound)?
+            .ok_or(GetMutError::NotFound)?
             .acquire_component_internal_mut(self.slot)
     }
 }
@@ -271,20 +275,20 @@ unsafe impl ISlotId for DynComponentId {
         (self.slot, self.tyid)
     }
 
-    fn get<'w>(&self, world: &'w World) -> Result<Ref<'w, dyn IComponent>, ComponentGetError> {
+    fn get<'w>(&self, world: &'w World) -> Result<Ref<'w, dyn IComponent>, GetError> {
         world
             .get_level(self.lidx)
-            .ok_or(ComponentGetError::NotFound)?
+            .ok_or(GetError::NotFound)?
             .acquire_component_internal_dyn(self.tyid, self.slot)
     }
 
     fn get_mut<'w>(
         &self,
         world: &'w World,
-    ) -> Result<RefMut<'w, dyn IComponent>, ComponentGetMutError> {
+    ) -> Result<RefMut<'w, dyn IComponent>, GetMutError> {
         world
             .get_level(self.lidx)
-            .ok_or(ComponentGetMutError::NotFound)?
+            .ok_or(GetMutError::NotFound)?
             .acquire_component_internal_dyn_mut(self.tyid, self.slot)
     }
 }

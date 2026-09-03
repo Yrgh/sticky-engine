@@ -119,7 +119,7 @@ impl Relations {
     /// Returns an iterator over all types registered as implementing a trait.
     ///
     /// Note: `D` is an [`ISlotId`], not the trait.
-    pub fn iter_slot_tys<D: ISlotId>(&self) -> impl Iterator<Item = TypeId> {
+    pub fn iter_slot_types<D: ISlotId>(&self) -> impl Iterator<Item = TypeId> {
         self.slot_to_ty
             .get(&TypeId::of::<D::TraitObject>())
             .into_iter()
