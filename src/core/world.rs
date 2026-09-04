@@ -4,7 +4,7 @@
 //! non-blocking interior mutability, meaning the [`World`] cannot be shared across threads. The
 //! [`World`] contains all [`Level`]s, [`IWindow`]s, and Components.
 use std::{
-    cell::{Cell, Ref, RefCell, RefMut, UnsafeCell},
+    cell::{Cell, Ref, RefCell, RefMut},
     collections::VecDeque,
     rc::Rc,
     sync::Arc,
@@ -23,27 +23,20 @@ use crate::core::{
     engine_sync::EngineSync,
     gpu_api::{GpuApi, IGpuApi, IRenderer},
     level::{Level, LevelId, LevelIdOwned},
-    util::gen_slot_vec::{RefCellGenSlotVec, SlotIndex},
+    util::gen_slot_vec::{NoMutGenSlotVec, RefCellGenSlotVec, SlotIndex},
     window::{IWindowBoth, RootWindow, WindowId, WindowIdOwned},
 };
 
-use crate::core::{util::sentinel::SentinelMaxU32, window::IWindow};
+use crate::core::window::IWindow;
 
 enum WorldAction {
     DeleteLevel(LevelIdOwned),
     DeleteWindow(WindowIdOwned),
 }
 
-enum LevelStorage {
-    Occupied(Level),
-    Vacant(SentinelMaxU32),
-}
-
 /// The entire context of the engine, including Components.
 pub struct World {
-    // UnsafeCell custom implementation because RefCellGenSlotVec would mean RefCell<RefCell<>>
-    levels: Box<boxcar::Vec<UnsafeCell<(u32, LevelStorage)>>>,
-    level_free_head: Cell<SentinelMaxU32>,
+    levels: NoMutGenSlotVec<Level>,
 
     action_queue: RefCell<VecDeque<WorldAction>>,
 
@@ -104,30 +97,20 @@ impl World {
     /// # Safety
     ///
     /// Must be called when nothing else is using the [`World`].
-    pub(crate) unsafe fn flush_actions(&self) {
+    pub(crate) fn flush_actions(&mut self) {
         while let Some(action) = self.action_queue.borrow_mut().pop_front() {
             match action {
                 WorldAction::DeleteLevel(level) => {
-                    // # Safety
-                    // We *know* there are no accessors to a dead level
-                    let s = unsafe {
-                        (&raw const *self
-                            .levels
-                            .get(level.0 as usize)
-                            .expect("level index was given out"))
-                            .cast_mut()
-                            .as_mut_unchecked()
-                    };
-
-                    let s = unsafe { s.get().as_mut_unchecked() };
-
-                    if let LevelStorage::Occupied(level) = &s.1 {
+                    if let Some(level) = self.levels.get(level.0) {
                         level.destroy_internal(self)
+                    } else {
+                        continue;
                     }
 
-                    s.0 = s.0.wrapping_add(1);
-                    s.1 = LevelStorage::Vacant(self.level_free_head.take());
-                    self.level_free_head.set(SentinelMaxU32::from_some(level.0));
+                    assert!(
+                        self.levels.remove(level.0),
+                        "level index should be valid and level shouldn't be borrowed"
+                    );
 
                     level.leak();
                 }
@@ -206,60 +189,14 @@ impl World {
     /// Note, the `Level` will be inactive, so make sure to call
     /// [`Level::set_active`].
     pub fn create_level(&self) -> LevelIdOwned {
-        let i: u32 = self
-            .levels
-            .count()
-            .try_into()
-            .expect("too many levels allocated");
-
-        if i == u32::MAX {
-            panic!("too many levels allocated");
-        }
-
-        let head = self.level_free_head.take();
-
-        if head.is_some() {
-            let head = head.into_inner();
-
-            // # Safety
-            // We *know* there are no accessors to a dead level
-            let s = unsafe {
-                (&raw const *self.levels.get(head as usize).expect("level is free"))
-                    .cast_mut()
-                    .as_mut_unchecked()
-            };
-            let s = unsafe { s.get().as_mut_unchecked() };
-
-            let g = s.0;
-            let LevelStorage::Vacant(new_head) = std::mem::replace(
-                &mut s.1,
-                LevelStorage::Occupied(Level::new(LevelId(head, g))),
-            ) else {
-                unreachable!()
-            };
-
-            self.level_free_head.set(new_head);
-
-            LevelIdOwned(head, s.0)
-        } else {
-            self.levels.push(UnsafeCell::new((
-                0,
-                LevelStorage::Occupied(Level::new(LevelId(i, 0))),
-            )));
-            LevelIdOwned(i, 0)
-        }
+        let index = self.levels.reserve();
+        self.levels.fill(index, Level::new(LevelId(index)));
+        LevelIdOwned(index)
     }
 
     /// Returns a reference to a [`Level`].
     pub fn get_level(&self, level: LevelId) -> Option<&Level> {
-        let (g, s) = unsafe { self.levels.get(level.0 as usize)?.get().as_ref_unchecked() };
-        if *g == level.1
-            && let LevelStorage::Occupied(l) = s
-        {
-            Some(l)
-        } else {
-            None
-        }
+        self.levels.get(level.0)
     }
 
     /// Destroy a [`Level`] using its owning index.
@@ -271,14 +208,7 @@ impl World {
 
     /// Returns an iterator over every level
     pub fn iter_levels(&self) -> impl Iterator<Item = &Level> {
-        self.levels.iter().filter_map(|(_, s)| {
-            let (_, l) = unsafe { s.get().as_ref_unchecked() };
-            if let LevelStorage::Occupied(l) = &l {
-                Some(l)
-            } else {
-                None
-            }
-        })
+        self.levels.iter()
     }
 }
 
@@ -696,8 +626,7 @@ impl WorldBuilder {
 
     pub(crate) fn finish_ish(&self, engine_sync: Arc<EngineSync>) -> World {
         let world = World {
-            levels: Box::new(boxcar::Vec::new()),
-            level_free_head: Cell::new(SentinelMaxU32::default()),
+            levels: NoMutGenSlotVec::new(),
 
             action_queue: RefCell::new(VecDeque::new()),
 

@@ -45,7 +45,10 @@ pub trait AsyncFs: Sync + 'static {
     ) -> Pin<Box<dyn Future<Output = std::io::Result<()>> + Send + 'a>>;
 }
 
-/// An [`AsyncFs`] that just panics.
+/// An [`AsyncFs`] that isn't implemented.
+/// 
+/// This panics if any method of `AsyncFs` is called. It is highly discouraged
+/// for production code *unless* you are *certain* no async is ever used.
 pub struct FalseAsyncFs;
 
 impl AsyncFs for FalseAsyncFs {

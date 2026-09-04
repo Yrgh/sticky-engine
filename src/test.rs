@@ -483,7 +483,7 @@ mod world {
 
     #[test]
     fn create_get_iterate_destroy_level() {
-        let driver = new_world_traced().unwrap();
+        let mut driver = new_world_traced().unwrap();
         let world = driver.world();
 
         let owned = world.create_level();
@@ -496,8 +496,8 @@ mod world {
 
         // Destroy and flush the action queue to free it.
         world.destroy_level(owned);
-        unsafe { world.flush_actions() };
-        assert!(world.get_level(handle).is_none());
+        driver.flush();
+        assert!(driver.world().get_level(handle).is_none());
     }
 }
 
@@ -655,7 +655,7 @@ mod level {
         let level = world.main_level().expect("main level exists");
         assert_eq!(level.get_script::<CallScript>().unwrap().idle_calls, 2);
 
-        level.remove_script::<CallScript>().unwrap();
+        level.remove_script::<CallScript>(world).unwrap();
         assert!(level.get_script::<CallScript>().is_err());
     }
 

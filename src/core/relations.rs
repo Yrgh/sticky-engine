@@ -1,4 +1,34 @@
-//! Type-trait reflection
+//! Bidirectional type-trait reflection
+//! 
+//! [`Relations`] describes two types of reflection: Slot trait object to
+//! implementing Components and Component to [`Convert`]s for a Slot. It is
+//! lazily loaded and accessible through [`RELATIONS`].
+//! 
+//! # Capabilities
+//! 
+//! A `Convert` describes ways to convert a Component to a trait object.
+//! [`Relations::get_convert`] allows you to speculatively cast to a Slot
+//! without knowing the static type of the value in question.
+//! 
+//! `Relations` can also tell you which Component types implement a Slot through
+//! [`Relations::iter_slot_types`].
+//! 
+//! If you wish to see whether an unknown type implements a Slot without needing
+//! the `Convert`, you can use [`Relations::implements`]. For the purposes of
+//! downcasting, the method treats a type as implementing itself, even if it is
+//! not a registered trait object.
+//! 
+//! # Limitations
+//! 
+//! [`Relations`] uses [`linkme`]. Implementations must be manually registered
+//! and non-generic, or else they won't track. The
+//! [`slot_impl`](crate::slot_impl) macro will handle this for you.
+//! 
+//! Because it uses linker magic, some targets won't be supported. In
+//! particular, `miri` and `wasm` targets will lose all impl reflection. In the
+//! case of [`Relations::implements`], `Self` "implementing" `Self` will still
+//! work, but all other functionality will not. On other non-supported targets,
+//! you may get a runtime panic or some other behavior.
 
 use std::{
     any::{Any, TypeId},
@@ -89,6 +119,13 @@ impl Relations {
         let mut slot_to_ty: HashMap<TypeId, Vec<TypeId>, BuildTypeIdHasher> = HashMap::default();
         let mut ty_converts = HashMap::default();
 
+        // MIRI will panic on SLOT_IMPLS.into_iter(), so just say nothing for now.
+        #[cfg(any(miri, target_arch="wasm32"))]
+        return Relations {
+            slot_to_ty,
+            ty_converts,
+        };
+
         for getter in SLOT_IMPLS {
             let (tyid, trid, conv) = getter();
 
@@ -110,6 +147,9 @@ impl Relations {
         &'static self,
         tyid: TypeId,
     ) -> Option<&'static Convert<D::TraitObject>> {
+        #[cfg(any(miri, target_arch="wasm32"))]
+        tracing::error!("miri has disable features of RELATIONS, including get_convert");
+        
         let boxy = self
             .ty_converts
             .get(&(tyid, TypeId::of::<D::TraitObject>()))?;
@@ -120,6 +160,9 @@ impl Relations {
     ///
     /// Note: `D` is an [`ISlotId`], not the trait.
     pub fn iter_slot_types<D: ISlotId>(&self) -> impl Iterator<Item = TypeId> {
+        #[cfg(any(miri, target_arch="wasm32"))]
+        tracing::error!("miri has disable features of RELATIONS, including iter_slot_types");
+        
         self.slot_to_ty
             .get(&TypeId::of::<D::TraitObject>())
             .into_iter()

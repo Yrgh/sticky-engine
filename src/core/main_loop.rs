@@ -362,7 +362,7 @@ impl ApplicationHandler for MainLoop {
             }
         }
 
-        unsafe { self.driver.world.flush_actions() };
+        self.driver.world.flush_actions();
         
 
         if let Some(gpu_api) = self.driver.world.get_gpu_api() {
@@ -554,6 +554,9 @@ pub enum ManualDriverNewError {
     MainWindow,
     #[error("error occurred and was reported through tracing")]
     Reported,
+    #[error("something caused the driver to quit")]
+    /// Returned if the initialization function directly or indirectly triggered a quit.
+    QuitImmediately,
 }
 
 impl ManualDriver {
@@ -683,6 +686,12 @@ impl ManualDriver {
 
         init_fn(&self_.world);
 
+        if self_.downtime(None) {
+            return Err(ManualDriverNewError::QuitImmediately);
+        }
+
+        self_.world.flush_actions();
+
         Ok(self_)
     }
 
@@ -696,7 +705,9 @@ impl ManualDriver {
     /// Returns whether a quit was requested. You do not have to honor it, but
     /// it may have cancelled some actions.
     pub fn tick_physics(&mut self) -> bool {
-        self.physics_internal(self.world.engine().get_stable_tick_rate(), None)
+        let result = self.physics_internal(self.world.engine().get_stable_tick_rate(), None);
+        self.world.flush_actions();
+        result
     }
 
     /// Emit an idle tick.
@@ -707,7 +718,9 @@ impl ManualDriver {
     /// Returns whether a quit was requested. You do not have to honor it, but
     /// it may have cancelled some actions.
     pub fn tick_idle(&mut self, delta: f32) -> bool {
-        self.idle_internal(delta, None)
+        let result = self.idle_internal(delta, None);
+        self.world.flush_actions();
+        result
     }
 
     /// Returns the [`World`] this driver owns.
@@ -720,5 +733,15 @@ impl ManualDriver {
     /// This is a shortcut for `self.world().engine().clone()`.
     pub fn engine(&self) -> Arc<EngineSync> {
         self.world.engine().clone()
+    }
+
+    /// Flush any queued actions.
+    /// 
+    /// Returns whether a quit was requested. You do not have to honor it, but
+    /// it may have cancelled some actions.
+    pub fn flush(&mut self) -> bool {
+        let result = self.downtime(None);
+        self.world.flush_actions();
+        result
     }
 }

@@ -407,7 +407,7 @@ impl Gamepad {
                 )
             }
             gilrs::Button::Mode => {
-                self.this_state.is_north_pressed = pressed;
+                self.this_state.is_mode_pressed = pressed;
                 self.state_delta.is_mode_pressed = pressed != self.last_state.is_mode_pressed;
                 SetButtonResult::BinaryDelta(self.state_delta.is_mode_pressed, GamepadBinary::Mode)
             }

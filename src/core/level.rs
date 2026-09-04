@@ -500,13 +500,13 @@ impl Level {
     /// # Borrows
     ///
     /// Borrows **all** Scripts immutably.
-    pub fn remove_script<S: IScript>(&self) -> Result<(), GetMutError> {
-        if self
+    pub fn remove_script<S: IScript>(&self, world: &World) -> Result<(), GetMutError> {
+        if let Some(mut s) = self
             .scripts
             .try_borrow_mut()?
             .remove(&TypeId::of::<S>())
-            .is_some()
         {
+            s.destroy(world, self);
             Ok(())
         } else {
             Err(GetMutError::NotFound)
@@ -575,16 +575,16 @@ impl Level {
 
 /// Non-owning index within the [`World`] of a [`Level`].
 #[derive(Clone, Copy, Hash, PartialEq, Eq, Debug)]
-pub struct LevelId(pub(crate) u32, pub(crate) u32);
+pub struct LevelId(pub(crate) SlotIndex);
 
 /// Singly-owning index within the [`World`] of a [`Level`].
 #[derive(Hash)]
-pub struct LevelIdOwned(pub(crate) u32, pub(crate) u32);
+pub struct LevelIdOwned(pub(crate) SlotIndex);
 
 impl LevelIdOwned {
     /// Returns a non-owning copy of this index.
     pub fn handle(&self) -> LevelId {
-        LevelId(self.0, self.1)
+        LevelId(self.0)
     }
 
     /// Leaks the index. The [`Level`] will live until the [`World`] is dropped.
@@ -592,17 +592,15 @@ impl LevelIdOwned {
     /// Avoid silent-dropping a `LevelIdOwned`, as it logs an error unless
     /// you call this manually.
     pub fn leak(mut self) {
-        self.0 = u32::MAX;
-        self.1 = u32::MAX
+        self.0 = SlotIndex::invalid();
     }
 }
 
 impl Drop for LevelIdOwned {
     fn drop(&mut self) {
-        if self.0 != u32::MAX && self.1 != u32::MAX {
+        if self.0.is_valid() {
             tracing::warn!(
-                handle.pos_idx = self.0,
-                handle.gen_idx = self.1,
+                handle = ?self.0,
                 "a LevelIdOwned was dropped without manually being leaked, preventing the Level \
                 from being removed until the World is destroyed"
             );
