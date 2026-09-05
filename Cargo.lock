@@ -2008,6 +2008,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "vulkano",
+ "weak-table",
  "wincode",
  "winit",
 ]
@@ -2505,6 +2506,16 @@ dependencies = [
  "log",
  "once_cell",
  "pkg-config",
+]
+
+[[package]]
+name = "weak-table"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5eba2ec791141b0bf4db542f6b038a8f9310cee33e076cb181245780b09a24ff"
+dependencies = [
+ "cfg-if",
+ "hashbrown 0.16.1",
 ]
 
 [[package]]

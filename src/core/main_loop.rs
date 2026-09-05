@@ -362,7 +362,7 @@ impl ApplicationHandler for MainLoop {
             }
         }
 
-        self.driver.world.flush_actions();
+        self.driver.flush_internal();
         
 
         if let Some(gpu_api) = self.driver.world.get_gpu_api() {
@@ -562,6 +562,7 @@ pub enum ManualDriverNewError {
 impl ManualDriver {
     fn downtime(&mut self, timeout: Option<Duration>) -> bool {
         let start = Instant::now();
+        
         while timeout.is_none_or(|t| start.elapsed() < t) {
             // Clear out sync first, since that is unbounded
             let job = match self.jobs_sync.try_recv() {
@@ -587,7 +588,13 @@ impl ManualDriver {
                 MainJob::Quit => return true,
             }
         }
+        
         false
+    }
+
+    fn flush_internal(&mut self) {
+        self.world.engine().asset_manager.periodic();
+        self.world.flush_actions();
     }
 
     fn physics_internal(
@@ -690,7 +697,7 @@ impl ManualDriver {
             return Err(ManualDriverNewError::QuitImmediately);
         }
 
-        self_.world.flush_actions();
+        self_.flush_internal();
 
         Ok(self_)
     }
@@ -706,7 +713,7 @@ impl ManualDriver {
     /// it may have cancelled some actions.
     pub fn tick_physics(&mut self) -> bool {
         let result = self.physics_internal(self.world.engine().get_stable_tick_rate(), None);
-        self.world.flush_actions();
+        self.flush_internal();
         result
     }
 
@@ -719,7 +726,7 @@ impl ManualDriver {
     /// it may have cancelled some actions.
     pub fn tick_idle(&mut self, delta: f32) -> bool {
         let result = self.idle_internal(delta, None);
-        self.world.flush_actions();
+        self.flush_internal();
         result
     }
 
@@ -741,7 +748,7 @@ impl ManualDriver {
     /// it may have cancelled some actions.
     pub fn flush(&mut self) -> bool {
         let result = self.downtime(None);
-        self.world.flush_actions();
+        self.flush_internal();
         result
     }
 }

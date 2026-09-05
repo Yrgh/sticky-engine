@@ -1,16 +1,14 @@
-//! The [`AssetManager`] and [`GlobalInterner`].
+//! The [`AssetManager`].
 
 use std::{
-    any::{Any, TypeId, type_name}, collections::{HashMap, HashSet, hash_map::Entry}, sync::{Arc},
+    any::{Any, TypeId, type_name},
+    collections::{HashMap, hash_map::Entry},
+    sync::Arc,
 };
 
-use parking_lot::RwLock;
 use thiserror::Error;
 
-use crate::core::asset::traits::{
-    BytesError, IntoCacher, LoadAssetError, SaveAssetError, SaverLoader, UpdateError,
-};
-
+use super::traits::{BytesError, IntoCacher, LoadAssetError, SaveAssetError, SaverLoader, UpdateError};
 use super::*;
 
 #[derive(Debug, Error)]
@@ -48,41 +46,6 @@ pub enum SetAssetError {
     #[error("no loader for asset type")]
     /// Returned if the saver for the asset type was not set
     NoSaver,
-}
-
-/// A global string interner for asset paths.
-///
-/// All asset paths are sent into this pool, reducing allocations application-wide. Y
-pub struct Interner {
-    inner: RwLock<HashSet<Arc<str>>>,
-}
-
-impl Interner {
-    /// Intern a string, returning a shared [`Arc<str>`].
-    ///
-    /// If the string has been interned before, the existing [`Arc<str>`]
-    /// is returned. Otherwise, a new allocation is made and stored.
-    pub fn intern(&self, s: &str) -> Arc<str> {
-        if let Some(arc) = self.inner.read().get(s) {
-            return arc.clone();
-        }
-
-        let mut guard = self.inner.write();
-
-        if let Some(arc) = guard.get(s) {
-            arc.clone()
-        } else {
-            let arc: Arc<str> = s.into();
-            guard.insert(arc.clone());
-            arc
-        }
-    }
-
-    fn new() -> Self {
-        Self {
-            inner: RwLock::new(HashSet::new())
-        }
-    }
 }
 
 /// An asset manager that can be used to save and load various assets.
@@ -310,7 +273,9 @@ impl AssetManager {
 
             asset
         } else {
-            let path = self.interner.intern(asset.path());
+            // No cacher: the only thing that would otherwise keep this path
+            // alive is the returned asset, so pin it to survive future access.
+            let path = self.interner.pin_path(asset.path());
 
             Asset::new_resolved(path, asset.into_inner().into(), None)
         };
@@ -348,7 +313,9 @@ impl AssetManager {
 
             asset
         } else {
-            let path = self.interner.intern(asset.path());
+            // No cacher: the only thing that would otherwise keep this path
+            // alive is the returned asset, so pin it to survive future access.
+            let path = self.interner.pin_path(asset.path());
 
             Asset::new_resolved(path, asset.into_inner().into(), None)
         };
@@ -359,6 +326,10 @@ impl AssetManager {
         self.accessor.save_bytes_async(path, &bytes).await?;
 
         Ok(asset)
+    }
+
+    pub(crate) fn periodic(&self) {
+        self.interner.periodic();
     }
 }
 

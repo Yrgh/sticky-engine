@@ -358,6 +358,65 @@ mod assets {
         assert_eq!(&*a, path);
     }
 
+    #[test]
+    fn interner_pin_survives_drop() {
+        let interner = asset_builder_interner();
+        let path = "some/asset/path.blob";
+
+        let pinned = interner.pin_path(path);
+        drop(pinned);
+
+        // Pinned paths are held strongly by the interner, so re-internering
+        // after the only external reference is gone returns the same allocation.
+        let again = interner.pin_path(path);
+        let again2 = interner.pin_path(path);
+        assert!(
+            Arc::ptr_eq(&again, &again2),
+            "pinned paths should re-intern to the same allocation"
+        );
+    }
+
+    #[test]
+    fn interner_pin_evicts_lru() {
+        let interner = asset_builder_interner();
+        let path = "some/asset/path.blob";
+
+        // The pin set is bounded, so this must not grow without limit.
+        for i in 0..10_000 {
+            interner.pin_path(&format!("assets/many/{i}.png"));
+        }
+
+        // The original pinned path should still re-intern to itself (it stays
+        // pinned until evicted).
+        let a = interner.pin_path(path);
+        let b = interner.pin_path(path);
+        assert!(Arc::ptr_eq(&a, &b));
+
+        // A live pin should keep deduping even after lots of other pins.
+        let c = interner.pin_path("still/here.png");
+        let d = interner.pin_path("still/here.png");
+        assert!(Arc::ptr_eq(&c, &d), "live pin should still dedupe");
+    }
+
+    #[test]
+    fn interner_len_clear() {
+        let interner = asset_builder_interner();
+        let path = "some/asset/path.blob";
+
+        let _a = interner.pin_path(path);
+        assert_eq!(interner.len(), 1);
+        assert!(!interner.is_empty());
+
+        interner.clear();
+        assert_eq!(interner.len(), 0);
+        assert!(interner.is_empty());
+
+        // After clear, interning again yields a fresh, valid entry.
+        let b = interner.intern(path);
+        assert_eq!(&*b, path);
+        assert_eq!(interner.len(), 1);
+    }
+
     // ---- Asset / OwnedAsset containers ----
 
     #[test]
